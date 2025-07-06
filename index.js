@@ -1,4 +1,3 @@
-// index.js
 import puppeteer from "puppeteer";
 import fs from "fs";
 import { login } from "./login.js";
@@ -12,7 +11,7 @@ if (process.env.COOKIES_BASE64 && !fs.existsSync(COOKIE_PATH)) {
     "utf-8"
   );
   fs.writeFileSync(COOKIE_PATH, decoded);
-  console.log("✅ cookies.json restored from Base64");
+  console.log("cookies.json restored from Base64");
 }
 
 async function saveCookies(cookies) {
@@ -29,8 +28,30 @@ async function loadCookies(page) {
 }
 
 (async () => {
+  const chartLinks = await getChartLinks();
+
+  const BATCH_INDEX = parseInt(
+    process.argv[2] || process.env.BATCH_INDEX || "0",
+    10
+  );
+  const ACCOUNT_START = parseInt(process.env.ACCOUNT_START || "0", 10);
+  const ACCOUNT_END = parseInt(
+    process.env.ACCOUNT_END || chartLinks.length.toString(),
+    10
+  );
+  const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "100", 10);
+
+  const accountLinks = chartLinks.slice(ACCOUNT_START, ACCOUNT_END);
+
+  const start = BATCH_INDEX * BATCH_SIZE;
+  const end = start + BATCH_SIZE;
+  const batchLinks = accountLinks.slice(start, end);
+
+  console.log(`Account range: ${ACCOUNT_START}–${ACCOUNT_END}`);
+  console.log(`Processing batch ${BATCH_INDEX}: ${start} to ${end}`);
+
   const browser = await puppeteer.launch({
-    headless: "new", // Login page requires UI rendering
+    headless: "new",
     slowMo: 50,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
   });
@@ -43,48 +64,38 @@ async function loadCookies(page) {
       const cookies = await login(page);
       await saveCookies(cookies);
     } catch (err) {
-      console.error("❌ Login failed:", err.message);
-      //   try {
-      //     await page.screenshot({ path: "fatal-login-error.png" });
-      //   } catch (screenshotError) {
-      //     console.warn("⚠ Could not take screenshot:", screenshotError.message);
-      //   }
-
+      console.error("Login failed:", err.message);
       await browser.close();
       process.exit(1);
     }
   }
 
-  const chartLinks = await getChartLinks();
-
-  const batchIndex = parseInt(process.argv[2] || "0", 10);
-  const BATCH_SIZE = 35;
-  const start = batchIndex * BATCH_SIZE;
-  const end = start + BATCH_SIZE;
-  const batchLinks = chartLinks.slice(start, end);
-  console.log(`🔢 Processing batch ${batchIndex}: ${batchLinks.length} charts`);
-
   for (let i = 0; i < batchLinks.length; i++) {
     const url = batchLinks[i];
     if (!url) continue;
 
-    const originalIndex = start + i;
+    const globalIndex = ACCOUNT_START + BATCH_INDEX * BATCH_SIZE + i;
+    console.log(`Scraping Row ${globalIndex + 2}: ${url}`);
 
-    console.log(`📈 Scraping Row ${originalIndex + 2}: ${url}`);
     try {
       const values = await scrapeChart(page, url);
-      const rowData = [url, ...values];
-      await writeValuesToNewSheet(originalIndex, rowData);
+      const month = values[0];
+      const day = values[1];
+      const date = `${day}/${month}/2025`;
+      const rowData = [date, ...values];
+      await writeValuesToNewSheet(globalIndex, rowData);
     } catch (err) {
-      console.error(`⚠️ Error scraping ${url}:`, err.message);
+      console.error(` Error scraping ${url}:`, err.message);
     }
-    if ((i + 1) % 200 === 0) {
-      console.log(" Restarting page to clear memory...");
+
+    if ((i + 1) % 100 === 0) {
+      console.log("Restarting page to clear memory...");
       await page.close();
       page = await browser.newPage();
       await loadCookies(page);
     }
-    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    await new Promise((r) => setTimeout(r, 500));
   }
 
   await browser.close();

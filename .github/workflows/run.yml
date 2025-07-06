@@ -1,44 +1,35 @@
-name: TradingView Scraper
+name: TradingView Scraper A2
 
 on:
   schedule:
-    - cron: "30 13 * * *"
+    - cron: "30 11 * * 1-5"
   workflow_dispatch:
 
 jobs:
   scrape:
     strategy:
       matrix:
-        batch: [0, 1, 2, 3, 4, 5, 6]
-      fail-fast: false
+        batch: [0, 1, 2, 3, 4]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - run: npm ci
 
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Create .env file
+      - name: Create .env
         run: |
           echo "SHEET_ID=${{ secrets.SHEET_ID }}" >> .env
           echo "SOURCE_SHEET=${{ secrets.SOURCE_SHEET }}" >> .env
-
           echo "OUTPUT_SHEET_ID=${{ secrets.OUTPUT_SHEET_ID }}" >> .env
           echo "OUTPUT_SHEET=${{ secrets.OUTPUT_SHEET }}" >> .env
-
           echo "GOOGLE_SERVICE_ACCOUNT_EMAIL=${{ secrets.GOOGLE_SERVICE_ACCOUNT_EMAIL }}" >> .env
           echo "GOOGLE_PRIVATE_KEY=\"${{ secrets.GOOGLE_PRIVATE_KEY }}\"" >> .env
-        shell: bash
+          echo "ACCOUNT_START=450" >> .env
+          echo "ACCOUNT_END=900" >> .env
+          echo "BATCH_SIZE=90" >> .env
 
-      - name: Restore cookies.json from base64
-        run: echo "${{ secrets.COOKIES_BASE64 }}" | base64 -d > cookies.json
-        shell: bash
+      - run: echo "${{ secrets.COOKIES_BASE64 }}" | base64 -d > cookies.json
 
-      - name: Run scraper for batch ${{ matrix.batch }}
-        run: node index.js ${{ matrix.batch }}
+      - run: node index.js ${{ matrix.batch }}

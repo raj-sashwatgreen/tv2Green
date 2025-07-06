@@ -8,7 +8,7 @@ const PASSWORD = process.env.PASSWORD;
 const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
 export async function login(page) {
-  console.log("🔐 Navigating to TradingView Login...");
+  console.log("Navigating to TradingView Login...");
 
   // Set user agent to avoid bot detection
   await page.setUserAgent(
@@ -27,9 +27,9 @@ export async function login(page) {
   // Take a screenshot to debug what's on the page
   try {
     await page.screenshot({ path: "login_page_debug.png", fullPage: true });
-    console.log("📸 Debug screenshot saved as login_page_debug.png");
+    console.log("Debug screenshot saved as login_page_debug.png");
   } catch (e) {
-    console.warn("⚠ Could not take screenshot:", e.message);
+    console.warn("Could not take screenshot:", e.message);
   }
 
   // Check if we're already logged in
@@ -41,7 +41,7 @@ export async function login(page) {
   });
 
   if (isLoggedIn) {
-    console.log("✅ Already logged in!");
+    console.log("Already logged in!");
     return await page.cookies();
   }
 
@@ -87,7 +87,7 @@ export async function login(page) {
     };
   });
 
-  console.log("🔍 Page Analysis:");
+  console.log("Page Analysis:");
   console.log("URL:", pageInfo.url);
   console.log("Title:", pageInfo.title);
   console.log("Has Email Button:", pageInfo.hasEmailButton);
@@ -121,7 +121,7 @@ export async function login(page) {
 
   for (const selector of emailButtonSelectors) {
     try {
-      console.log(`🔍 Trying selector: ${selector}`);
+      console.log(`Trying selector: ${selector}`);
 
       // Special handling for :has-text selectors
       if (selector.includes(":has-text(")) {
@@ -136,7 +136,7 @@ export async function login(page) {
         }, text);
 
         if (element && (await element.asElement())) {
-          console.log(`✅ Found email button with text: ${text}`);
+          console.log(`Found email button with text: ${text}`);
           await element.asElement().click();
           emailButtonClicked = true;
           break;
@@ -145,23 +145,23 @@ export async function login(page) {
         // Regular selector
         const element = await page.$(selector);
         if (element) {
-          console.log(`✅ Found email button with selector: ${selector}`);
+          console.log(`Found email button with selector: ${selector}`);
           await element.click();
           emailButtonClicked = true;
           break;
         }
       }
     } catch (e) {
-      console.log(`❌ Selector ${selector} failed: ${e.message}`);
+      console.log(`Selector ${selector} failed: ${e.message}`);
     }
   }
 
   if (emailButtonClicked) {
-    console.log("✅ Email button clicked, waiting for form...");
+    console.log("Email button clicked, waiting for form...");
     await delay(3000);
   } else {
     console.log(
-      "⚠ No email button found, checking if form is already visible..."
+      "No email button found, checking if form is already visible..."
     );
   }
 
@@ -189,16 +189,16 @@ export async function login(page) {
       // Type the email
       await page.type(selector, EMAIL, { delay: 100 });
 
-      console.log(`✅ Username filled using selector: ${selector}`);
+      console.log(`Username filled using selector: ${selector}`);
       usernameFieldFound = true;
       break;
     } catch (e) {
-      console.log(`❌ Username selector ${selector} failed: ${e.message}`);
+      console.log(`Username selector ${selector} failed: ${e.message}`);
     }
   }
 
   if (!usernameFieldFound) {
-    throw new Error("❌ Could not find username/email input field");
+    throw new Error("Could not find username/email input field");
   }
 
   // Strategy 3: Find and fill the password field
@@ -224,16 +224,16 @@ export async function login(page) {
       // Type the password
       await page.type(selector, PASSWORD, { delay: 100 });
 
-      console.log(`✅ Password filled using selector: ${selector}`);
+      console.log(`Password filled using selector: ${selector}`);
       passwordFieldFound = true;
       break;
     } catch (e) {
-      console.log(`❌ Password selector ${selector} failed: ${e.message}`);
+      console.log(`Password selector ${selector} failed: ${e.message}`);
     }
   }
 
   if (!passwordFieldFound) {
-    throw new Error("❌ Could not find password input field");
+    throw new Error("Could not find password input field");
   }
 
   // Strategy 4: Submit the form
@@ -271,7 +271,7 @@ export async function login(page) {
         }, text);
 
         if (element && (await element.asElement())) {
-          console.log(`✅ Submitting form with text: ${text}`);
+          console.log(`Submitting form with text: ${text}`);
           await element.asElement().click();
           formSubmitted = true;
           break;
@@ -279,31 +279,31 @@ export async function login(page) {
       } else {
         const element = await page.$(selector);
         if (element) {
-          console.log(`✅ Submitting form with selector: ${selector}`);
+          console.log(`Submitting form with selector: ${selector}`);
           await element.click();
           formSubmitted = true;
           break;
         }
       }
     } catch (e) {
-      console.log(`❌ Submit selector ${selector} failed: ${e.message}`);
+      console.log(`Submit selector ${selector} failed: ${e.message}`);
     }
   }
 
   if (!formSubmitted) {
-    console.log("⚠ No submit button found, trying Enter key...");
+    console.log("No submit button found, trying Enter key...");
     await page.keyboard.press("Enter");
     formSubmitted = true;
   }
 
-  console.log("⏳ Waiting for login to complete...");
+  console.log("Waiting for login to complete...");
 
   // Wait for navigation or URL change
   let loginSuccessful = false;
   try {
     // Wait for either navigation or URL change
     await Promise.race([
-      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 20000 }),
+      page.waitForNavigation({ waitUntil: "networkidle2", timeout: 30000 }),
       page.waitForFunction(
         () =>
           !window.location.href.includes("/signin") &&
@@ -313,18 +313,18 @@ export async function login(page) {
     ]);
     loginSuccessful = true;
   } catch (e) {
-    console.warn("⚠ Navigation timeout, checking current state...");
+    console.warn("Navigation timeout, checking current state...");
   }
 
   // Check final state
   const finalUrl = page.url();
-  console.log("📍 Final URL:", finalUrl);
+  console.log("Final URL:", finalUrl);
 
   if (finalUrl.includes("/signin") || finalUrl.includes("/login")) {
     // Take screenshot to debug
     try {
       await page.screenshot({ path: "login_failed_debug.png", fullPage: true });
-      console.log("📸 Login failed screenshot saved as login_failed_debug.png");
+      console.log("Login failed screenshot saved as login_failed_debug.png");
     } catch (e) {
       // Ignore
     }
@@ -351,13 +351,13 @@ export async function login(page) {
     });
 
     if (errorMessage) {
-      throw new Error(`❌ Login failed: ${errorMessage}`);
+      throw new Error(`Login failed: ${errorMessage}`);
     } else {
-      throw new Error("❌ Login failed: Still on login page");
+      throw new Error("Login failed: Still on login page");
     }
   }
 
-  console.log("✅ Login successful! Saving cookies...");
+  console.log("Login successful! Saving cookies...");
   const cookies = await page.cookies();
   return cookies;
 }

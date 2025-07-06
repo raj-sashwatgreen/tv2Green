@@ -1,4 +1,3 @@
-// scrape.js
 async function safeGoto(page, url, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -9,7 +8,7 @@ async function safeGoto(page, url, retries = 3) {
       }
       return true;
     } catch (err) {
-      console.warn(`🔁 Retry ${i + 1} for ${url} – ${err.message}`);
+      console.warn(`Retry ${i + 1} for ${url} – ${err.message}`);
       if (i === retries - 1) return false;
       await new Promise((resolve) => setTimeout(resolve, 3000));
     }
@@ -20,7 +19,7 @@ export async function scrapeChart(page, url) {
   try {
     const success = await safeGoto(page, url);
     if (!success) {
-      console.error(`❌ Failed to load ${url}`);
+      console.error(`Failed to load ${url}`);
       return ["NAVIGATION FAILED"];
     }
 
@@ -60,15 +59,21 @@ export async function scrapeChart(page, url) {
           const text = titleDiv?.innerText?.toLowerCase();
           return text === "clubbed" || text === "l";
         });
+
         if (!clubbed) return ["CLUBBED NOT FOUND"];
+
         const valueSpans = clubbed.querySelectorAll(".valueValue-l31H9iuA");
-        return [...valueSpans].map((el) => el.innerText.trim());
+        const allValues = [...valueSpans].map((el) => {
+          const text = el.innerText.trim();
+          return text === "∅" ? "None" : text;
+        });
+        return allValues.slice(1);
       }
     );
 
     return values;
   } catch (err) {
-    console.error(`❌ Error scraping ${url}:`, err.message);
+    console.error(`Error scraping ${url}:`, err.message);
     return ["ERROR"];
   }
 }

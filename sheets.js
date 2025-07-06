@@ -16,7 +16,7 @@ const sheets = google.sheets({ version: "v4", auth });
 export async function getChartLinks() {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: process.env.SHEET_ID,
-    range: `${process.env.SOURCE_SHEET}!C2109:C`,
+    range: `${process.env.SOURCE_SHEET}!D2:D`,
   });
   return res.data.values.map(([url]) => url.replace(/"/g, "").trim());
 }
@@ -24,7 +24,7 @@ export async function getChartLinks() {
 export async function writeValuesToNewSheet(row, values) {
   await sheets.spreadsheets.values.update({
     spreadsheetId: process.env.OUTPUT_SHEET_ID,
-    range: `${process.env.OUTPUT_SHEET}!A${row + 2}`,
+    range: `${process.env.OUTPUT_SHEET}!B${row + 2}`,
     valueInputOption: "RAW",
     requestBody: {
       values: [values],
