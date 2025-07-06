@@ -84,6 +84,7 @@ async function loadCookies(page) {
       const date = `${day}/${month}/2025`;
       const rowData = [date, ...values];
       await writeValuesToNewSheet(globalIndex, rowData);
+      await new Promise((r) => setTimeout(r, 2000));
     } catch (err) {
       console.error(` Error scraping ${url}:`, err.message);
     }
