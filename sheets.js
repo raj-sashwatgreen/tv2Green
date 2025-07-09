@@ -21,23 +21,32 @@ export async function getChartLinks() {
   return res.data.values.map(([url]) => url.replace(/"/g, "").trim());
 }
 
-export async function writeValuesToNewSheet(row, values) {
-  await sheets.spreadsheets.values.update({
+export async function writeBulkValuesToSheet(startRow, rows) {
+  await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId: process.env.OUTPUT_SHEET_ID,
-    range: `${process.env.OUTPUT_SHEET}!B${row + 2}`,
-    valueInputOption: "RAW",
     requestBody: {
-      values: [values],
+      valueInputOption: "RAW",
+      data: [
+        {
+          range: `${process.env.OUTPUT_SHEET}!B${startRow + 2}`,
+          values: rows,
+        },
+      ],
     },
   });
 }
 
-export async function writeWithRetry(row, values, retries = 5) {
+export async function writeBulkWithRetry(startRow, rows, retries = 5) {
+  console.log(
+    `📝 Attempting to write ${rows.length} rows starting from row ${
+      startRow + 2
+    }`
+  );
   const delay = (ms) => new Promise((res) => setTimeout(res, ms));
 
   for (let attempt = 0; attempt < retries; attempt++) {
     try {
-      await writeValuesToNewSheet(row, values);
+      await writeBulkValuesToSheet(startRow, rows);
       return;
     } catch (err) {
       const msg = err.message || JSON.stringify(err);
@@ -46,7 +55,7 @@ export async function writeWithRetry(row, values, retries = 5) {
         msg.includes("USER_RATE_LIMIT_EXCEEDED")
       ) {
         const wait = 1000 * Math.pow(2, attempt);
-        console.warn(`Quota exceeded. Retrying in ${wait / 1000}s...`);
+        console.warn(`Bulk quota exceeded. Retrying in ${wait / 1000}s...`);
         await delay(wait);
       } else {
         throw err;
@@ -54,5 +63,5 @@ export async function writeWithRetry(row, values, retries = 5) {
     }
   }
 
-  console.error(`Failed to write to row ${row + 2} after ${retries} retries.`);
+  console.error(`Failed to write bulk rows starting at ${startRow + 2}`);
 }

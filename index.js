@@ -2,7 +2,7 @@ import puppeteer from "puppeteer";
 import fs from "fs";
 import { login } from "./login.js";
 import { scrapeChart } from "./scrape.js";
-import { getChartLinks, writeWithRetry } from "./sheets.js";
+import { getChartLinks, writeBulkWithRetry } from "./sheets.js";
 
 const COOKIE_PATH = "./cookies.json";
 
@@ -70,6 +70,9 @@ async function loadCookies(page) {
     }
   }
 
+  let rowBuffer = [];
+  let startRow = -1;
+
   for (let i = 0; i < batchLinks.length; i++) {
     const url = batchLinks[i];
     if (!url) continue;
@@ -83,8 +86,18 @@ async function loadCookies(page) {
       const day = values[1];
       const date = `${day}/${month}/2025`;
       const rowData = [date, ...values];
-      await writeWithRetry(globalIndex, rowData);
-      await new Promise((r) => setTimeout(r, 2000));
+
+      if (rowBuffer.length === 0) startRow = globalIndex;
+      rowBuffer.push(rowData);
+
+      // Write in bulk every 10 rows
+      if (rowBuffer.length === 10) {
+        await writeBulkWithRetry(startRow, rowBuffer);
+        rowBuffer = [];
+        startRow = -1;
+      }
+
+      await new Promise((r) => setTimeout(r, 1000));
     } catch (err) {
       console.error(` Error scraping ${url}:`, err.message);
     }
@@ -97,6 +110,14 @@ async function loadCookies(page) {
     }
 
     await new Promise((r) => setTimeout(r, 500));
+  }
+
+  // Write any remaining rows
+  if (rowBuffer.length > 0) {
+    console.log(
+      `Writing remaining ${rowBuffer.length} rows starting from ${startRow + 2}`
+    );
+    await writeBulkWithRetry(startRow, rowBuffer);
   }
 
   await browser.close();
