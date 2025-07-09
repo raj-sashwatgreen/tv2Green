@@ -2,7 +2,7 @@ import puppeteer from "puppeteer";
 import fs from "fs";
 import { login } from "./login.js";
 import { scrapeChart } from "./scrape.js";
-import { getChartLinks, writeValuesToNewSheet } from "./sheets.js";
+import { getChartLinks, writeWithRetry } from "./sheets.js";
 
 const COOKIE_PATH = "./cookies.json";
 
@@ -83,7 +83,7 @@ async function loadCookies(page) {
       const day = values[1];
       const date = `${day}/${month}/2025`;
       const rowData = [date, ...values];
-      await writeValuesToNewSheet(globalIndex, rowData);
+      await writeWithRetry(globalIndex, rowData);
       await new Promise((r) => setTimeout(r, 2000));
     } catch (err) {
       console.error(` Error scraping ${url}:`, err.message);

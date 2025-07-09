@@ -31,3 +31,28 @@ export async function writeValuesToNewSheet(row, values) {
     },
   });
 }
+
+export async function writeWithRetry(row, values, retries = 5) {
+  const delay = (ms) => new Promise((res) => setTimeout(res, ms));
+
+  for (let attempt = 0; attempt < retries; attempt++) {
+    try {
+      await writeValuesToNewSheet(row, values);
+      return;
+    } catch (err) {
+      const msg = err.message || JSON.stringify(err);
+      if (
+        msg.includes("Quota exceeded") ||
+        msg.includes("USER_RATE_LIMIT_EXCEEDED")
+      ) {
+        const wait = 1000 * Math.pow(2, attempt);
+        console.warn(`Quota exceeded. Retrying in ${wait / 1000}s...`);
+        await delay(wait);
+      } else {
+        throw err;
+      }
+    }
+  }
+
+  console.error(`Failed to write to row ${row + 2} after ${retries} retries.`);
+}
