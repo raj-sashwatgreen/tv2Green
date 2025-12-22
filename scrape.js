@@ -23,16 +23,16 @@ export async function scrapeChart(page, url) {
       return ["NAVIGATION FAILED"];
     }
 
-    await page.waitForSelector('[data-name="legend"]', { timeout: 15000 });
+    await page.waitForSelector('[data-qa-id="legend"]', { timeout: 15000 });
 
     await page.waitForFunction(
       () => {
         const sections = document.querySelectorAll(
-          '[data-name="legend"] .item-l31H9iuA.study-l31H9iuA'
+          '[data-qa-id="legend"] .item-l31H9iuA.study-l31H9iuA'
         );
         for (const section of sections) {
           const title = section.querySelector(
-            '[data-name="legend-source-title"] .title-l31H9iuA'
+            '[data-qa-id="legend-source-title"] .title-l31H9iuA'
           );
           if (
             title?.innerText?.toLowerCase() === "clubbed" ||
@@ -50,11 +50,11 @@ export async function scrapeChart(page, url) {
     );
 
     const values = await page.$$eval(
-      '[data-name="legend"] .item-l31H9iuA.study-l31H9iuA',
+      '[data-qa-id="legend"] .item-l31H9iuA.study-l31H9iuA',
       (studySections) => {
         const clubbed = [...studySections].find((section) => {
           const titleDiv = section.querySelector(
-            '[data-name="legend-source-title"] .title-l31H9iuA'
+            '[data-qa-id="legend-source-title"] .title-l31H9iuA'
           );
           const text = titleDiv?.innerText?.toLowerCase();
           return text === "clubbed" || text === "l";
@@ -77,3 +77,4 @@ export async function scrapeChart(page, url) {
     return ["ERROR"];
   }
 }
+
