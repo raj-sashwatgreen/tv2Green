@@ -28,7 +28,7 @@ export async function writeBulkValuesToSheet(startRow, rows) {
       valueInputOption: "RAW",
       data: [
         {
-          range: `${process.env.OUTPUT_SHEET}!B${startRow + 2}`,
+          range: `${process.env.OUTPUT_SHEET}!C${startRow + 2}`,
           values: rows,
         },
       ],
@@ -65,3 +65,4 @@ export async function writeBulkWithRetry(startRow, rows, retries = 5) {
 
   console.error(`Failed to write bulk rows starting at ${startRow + 2}`);
 }
+
