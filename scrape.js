@@ -20,7 +20,8 @@ export async function scrapeChart(page, url) {
     const success = await safeGoto(page, url);
     if (!success) {
       console.error(`Failed to load ${url}`);
-      return ["NAVIGATION FAILED"];
+      // Shifted 2 columns right
+      return ["", "", "NAVIGATION FAILED"];
     }
 
     await page.waitForSelector('[data-qa-id="legend"]', { timeout: 15000 });
@@ -60,21 +61,23 @@ export async function scrapeChart(page, url) {
           return text === "clubbed" || text === "l";
         });
 
-        if (!clubbed) return ["CLUBBED NOT FOUND"];
+        if (!clubbed) return ["", "", "CLUBBED NOT FOUND"];
 
         const valueSpans = clubbed.querySelectorAll(".valueValue-l31H9iuA");
         const allValues = [...valueSpans].map((el) => {
           const text = el.innerText.trim();
           return text === "∅" ? "None" : text;
         });
-        return allValues.slice(1);
+
+        // The spread operator [...] combines two empty strings with your data slice
+        return ["", "", ...allValues.slice(1)];
       }
     );
 
     return values;
   } catch (err) {
     console.error(`Error scraping ${url}:`, err.message);
-    return ["ERROR"];
+    // Shifted 2 columns right
+    return ["", "", "ERROR"];
   }
 }
-
