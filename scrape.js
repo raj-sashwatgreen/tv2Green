@@ -1,83 +1,78 @@
 async function safeGoto(page, url, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 60000 });
-      const content = await page.content();
-      if (!content.includes("legend")) {
-        throw new Error("Possibly logged out or blocked.");
-      }
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 60000 });
+      await page.waitForSelector('[data-qa-id="legend"]', { timeout: 15000 });
       return true;
     } catch (err) {
       console.warn(`Retry ${i + 1} for ${url} – ${err.message}`);
       if (i === retries - 1) return false;
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      await new Promise(r => setTimeout(r, 3000));
     }
   }
 }
 
+// always keep same column count
+function fixedLength(arr, len, fill = "") {
+  if (arr.length >= len) return arr.slice(0, len);
+  return arr.concat(Array(len - arr.length).fill(fill));
+}
+
+// safe date builder (no //2025)
+function buildDate(day, month, year) {
+  if (!year) return "";
+  if (!day && !month) return `${year}`;
+  if (!day) day = "01";
+  if (!month) month = "01";
+  return `${String(day).padStart(2,"0")}/${String(month).padStart(2,"0")}/${year}`;
+}
+
 export async function scrapeChart(page, url) {
+  const EXPECTED_VALUE_COUNT = 25; // change if your sheet needs more/less columns
+
   try {
     const success = await safeGoto(page, url);
+
     if (!success) {
-      console.error(`Failed to load ${url}`);
-      // Shifted 2 columns right
-      return ["", "", "NAVIGATION FAILED"];
+      return ["", "", ...fixedLength(["NAVIGATION FAILED"], EXPECTED_VALUE_COUNT)];
     }
 
-    await page.waitForSelector('[data-qa-id="legend"]', { timeout: 15000 });
-
-    await page.waitForFunction(
-      () => {
-        const sections = document.querySelectorAll(
-          '[data-qa-id="legend"] .item-l31H9iuA.study-l31H9iuA'
-        );
-        for (const section of sections) {
-          const title = section.querySelector(
-            '[data-qa-id="legend-source-title"] .title-l31H9iuA'
-          );
-          if (
-            title?.innerText?.toLowerCase() === "clubbed" ||
-            title?.innerText?.toLowerCase() === "l"
-          ) {
-            const values = section.querySelectorAll(".valueValue-l31H9iuA");
-            return Array.from(values).some(
-              (el) => el.innerText.trim() && el.innerText.trim() !== "∅"
-            );
-          }
-        }
-        return false;
-      },
-      { timeout: 15000 }
+    // example date creation (edit source if you scrape real day/month/year)
+    const now = new Date();
+    const dateString = buildDate(
+      now.getDate(),
+      now.getMonth() + 1,
+      now.getFullYear()
     );
 
     const values = await page.$$eval(
       '[data-qa-id="legend"] .item-l31H9iuA.study-l31H9iuA',
-      (studySections) => {
-        const clubbed = [...studySections].find((section) => {
-          const titleDiv = section.querySelector(
+      (sections) => {
+        const clubbed = [...sections].find((section) => {
+          const title = section.querySelector(
             '[data-qa-id="legend-source-title"] .title-l31H9iuA'
           );
-          const text = titleDiv?.innerText?.toLowerCase();
+          const text = title?.innerText?.trim().toLowerCase();
           return text === "clubbed" || text === "l";
         });
 
-        if (!clubbed) return ["", "", "CLUBBED NOT FOUND"];
+        if (!clubbed) return ["CLUBBED NOT FOUND"];
 
         const valueSpans = clubbed.querySelectorAll(".valueValue-l31H9iuA");
-        const allValues = [...valueSpans].map((el) => {
-          const text = el.innerText.trim();
-          return text === "∅" ? "None" : text;
-        });
 
-        // The spread operator [...] combines two empty strings with your data slice
-        return ["", "", ...allValues.slice(1)];
+        return [...valueSpans].map((el) => {
+          const t = el.innerText.trim();
+          return t === "∅" ? "None" : t;
+        });
       }
     );
 
-    return values;
+    // first two blanks = shift by 2 columns
+    // then fixed number of values so sheet never shifts
+    return ["", "", dateString, ...fixedLength(values, EXPECTED_VALUE_COUNT - 1)];
+
   } catch (err) {
     console.error(`Error scraping ${url}:`, err.message);
-    // Shifted 2 columns right
-    return ["", "", "ERROR"];
+    return ["", "", ...fixedLength(["ERROR"], EXPECTED_VALUE_COUNT)];
   }
 }
