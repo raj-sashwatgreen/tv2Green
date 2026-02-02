@@ -48,7 +48,7 @@ def create_driver():
     )
     driver.set_page_load_timeout(40)
 
-    # ---- COOKIE LOGIC (UNCHANGED) ----
+    # ---- COOKIE LOGIC ----
     if os.path.exists("cookies.json"):
         try:
             driver.get("https://in.tradingview.com/")
@@ -81,6 +81,7 @@ def scrape_tradingview(driver, url):
                 '/html/body/div[2]/div/div[5]/div/div[1]/div/div[2]/div[1]/div[2]/div/div[1]/div[2]/div[2]/div[2]/div[2]/div'
             ))
         )
+
         soup = BeautifulSoup(driver.page_source, "html.parser")
         values = [
             el.get_text().replace('−', '-').replace('∅', 'None')
@@ -90,6 +91,7 @@ def scrape_tradingview(driver, url):
             )
         ]
         return values
+
     except (TimeoutException, NoSuchElementException):
         return []
     except WebDriverException:
@@ -101,13 +103,14 @@ log("📊 Connecting to Google Sheets...")
 try:
     gc = gspread.service_account("credentials.json")
     sheet_main = gc.open("Stock List").worksheet("Sheet1")
-    sheet_data = gc.open("Tradingview Data Reel Experimental May").worksheet("Sheet5")
+    sheet_data = gc.open("MV2 for SQL").worksheet("Sheet2")
 
-    company_list = sheet_main.col_values(5)
+    company_list = sheet_main.col_values(3)
     name_list = sheet_main.col_values(1)
 
     current_date = date.today().strftime("%m/%d/%Y")
     log(f"✅ Setup complete | Shard {SHARD_INDEX} | Resume index {last_i}")
+
 except Exception as e:
     log(f"❌ Setup Error: {e}")
     sys.exit(1)
@@ -143,10 +146,13 @@ try:
 
         if isinstance(values, list) and values:
             target_row = i + 1
+
+            # ✅ A=name | B=empty | C=date | D-F empty | G+=values
             batch_list.append({
                 "range": f"A{target_row}",
-                "values": [[name, current_date] + values]
+                "values": [[name, "", current_date, "", "", ""] + values]
             })
+
             log(f"📦 Buffered ({len(batch_list)}/{BATCH_SIZE})")
         else:
             log(f"⏭️ Skipped {name}")
@@ -174,5 +180,6 @@ finally:
             log(f"✅ Final save: {len(batch_list)} rows")
         except:
             pass
+
     driver.quit()
     log("🏁 Scraping completed successfully")
