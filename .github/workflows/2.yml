@@ -1,7 +1,11 @@
 name: T2 (Shards 5–9)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:   # Manual run
+  schedule:
+    # 5:30 PM IST = 12:00 UTC
+    # Runs ONLY Monday–Friday
+    - cron: '1 12 * * 1-5'
 
 jobs:
   scrape:
@@ -18,19 +22,26 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - run: pip install selenium beautifulsoup4 gspread webdriver-manager
-      - run: echo '${{ secrets.GSPREAD_CREDENTIALS }}' > credentials.json
-      - run: echo '${{ secrets.TRADINGVIEW_COOKIES }}' > cookies.json
+      - name: Install dependencies
+        run: pip install selenium beautifulsoup4 gspread webdriver-manager
 
-      - run: |
+      - name: Write credentials
+        run: |
+          echo '${{ secrets.GSPREAD_CREDENTIALS }}' > credentials.json
+          echo '${{ secrets.TRADINGVIEW_COOKIES }}' > cookies.json
+
+      - name: Init checkpoint
+        run: |
           FILE="checkpoint_group2_${{ matrix.shard }}.txt"
           [ ! -f "$FILE" ] && echo "1" > "$FILE"
 
-      - env:
+      - name: Run scraper
+        env:
           SHARD_INDEX: ${{ matrix.shard }}
           CHECKPOINT_FILE: checkpoint_group2_${{ matrix.shard }}.txt
         run: python run_scraper.py
