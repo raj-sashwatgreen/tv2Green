@@ -33,7 +33,6 @@ def create_driver():
     opts = Options()
 
     # ✅ Faster: don't wait for full page assets
-    # (does not change your extractor)
     opts.page_load_strategy = "eager"
 
     opts.add_argument("--headless=new")
@@ -204,16 +203,16 @@ try:
         target_row = i + 1
 
         if isinstance(values, list) and values:
-            # ✅ Only write A, C, and G onward. DO NOT touch B / D / E / F.
+            # ✅ Only write A, J, and K onward. DO NOT touch B..I.
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
-            batch_list.append({"range": f"C{target_row}", "values": [[current_date]]})
-            batch_list.append({"range": f"G{target_row}", "values": [values]})
+            batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
+            batch_list.append({"range": f"K{target_row}", "values": [values]})
             log(f"✅ Values: {len(values)} cells | Buffered: {len(batch_list)}/{BATCH_SIZE}")
         else:
             # Keep your behavior: still write name/date even if values missing
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
-            batch_list.append({"range": f"C{target_row}", "values": [[current_date]]})
-            log(f"⚠️ No values found for {name} (A/C updated only)")
+            batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
+            log(f"⚠️ No values found for {name} (A/J updated only)")
 
         if len(batch_list) >= BATCH_SIZE:
             flush_batch()
