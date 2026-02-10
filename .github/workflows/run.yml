@@ -1,8 +1,6 @@
 name: TradingView Scraper A2
 
 on:
-  schedule:
-    - cron: "0 12 * * 1-5"
   workflow_dispatch:
 
 jobs:
@@ -33,3 +31,4 @@ jobs:
       - run: echo "${{ secrets.COOKIES_BASE64 }}" | base64 -d > cookies.json
 
       - run: node index.js ${{ matrix.batch }}
+
