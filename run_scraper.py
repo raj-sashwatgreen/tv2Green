@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import json
+import random
 from datetime import date
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -24,6 +25,20 @@ SHARD_STEP  = int(os.getenv("SHARD_STEP", "1"))
 checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_{SHARD_INDEX}.txt")
 last_i = int(open(checkpoint_file).read()) if os.path.exists(checkpoint_file) else 0
 
+# ✅ NEW: save failed rows (does NOT change main scraping XPATH or class)
+FAILED_FILE = os.getenv("FAILED_FILE", f"failed_{SHARD_INDEX}.txt")
+_failed_seen = set()
+
+def mark_failed(i, reason="NO_VALUES"):
+    if i in _failed_seen:
+        return
+    _failed_seen.add(i)
+    try:
+        with open(FAILED_FILE, "a") as f:
+            f.write(f"{i}|{reason}\n")
+    except:
+        pass
+
 # ✅ Speed: resolve chromedriver path ONCE (restart will reuse it)
 CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
@@ -32,7 +47,6 @@ def create_driver():
     log("🌐 Initializing Hardened Chrome Instance...")
     opts = Options()
 
-    # ✅ Faster: don't wait for full page assets
     opts.page_load_strategy = "eager"
 
     opts.add_argument("--headless=new")
@@ -43,7 +57,6 @@ def create_driver():
     opts.add_argument("--blink-settings=imagesEnabled=false")
     opts.add_experimental_option("excludeSwitches", ["enable-logging"])
 
-    # ✅ small extra speed/consistency flags (no extractor change)
     opts.add_argument("--disable-notifications")
     opts.add_argument("--disable-popup-blocking")
     opts.add_argument("--disable-extensions")
@@ -62,9 +75,9 @@ def create_driver():
         service=Service(CHROME_DRIVER_PATH),
         options=opts
     )
-    driver.set_page_load_timeout(40)
+    driver.set_page_load_timeout(45)
 
-    # ---- COOKIE LOGIC ----
+    # ---- COOKIE LOGIC (FIX: include domain so cookies actually apply) ----
     if os.path.exists("cookies.json"):
         try:
             driver.get("https://in.tradingview.com/")
@@ -72,25 +85,25 @@ def create_driver():
             with open("cookies.json", "r") as f:
                 cookies = json.load(f)
 
+            allow = ("name", "value", "domain", "path", "secure", "expiry", "httpOnly", "sameSite")
+            ok = 0
             for c in cookies:
                 try:
-                    driver.add_cookie({
-                        k: v for k, v in c.items()
-                        if k in ("name", "value", "path", "secure", "expiry")
-                    })
+                    driver.add_cookie({k: v for k, v in c.items() if k in allow})
+                    ok += 1
                 except:
                     continue
 
             driver.refresh()
             time.sleep(1)
-            log("✅ Cookies applied successfully")
+            log(f"✅ Cookies applied successfully ({ok}/{len(cookies)})")
         except Exception as e:
-            log(f"⚠️ Cookie error: {str(e)[:80]}")
+            log(f"⚠️ Cookie error: {str(e)[:120]}")
 
     return driver
 
 # ---------------- SCRAPER LOGIC ---------------- #
-# ❌ NOT CHANGED (as you asked)
+# ✅ DO NOT CHANGE: your exact XPATH + your exact class parsing kept as-is
 def scrape_tradingview(driver, url):
     try:
         driver.get(url)
@@ -100,6 +113,12 @@ def scrape_tradingview(driver, url):
                 '/html/body/div[2]/div/div[5]/div/div[1]/div/div[2]/div[1]/div[2]/div/div[1]/div[2]/div[2]/div[2]/div[2]/div'
             ))
         )
+
+        # ✅ Extra safety: detect common blocked pages (doesn't change selector)
+        html = driver.page_source.lower()
+        if "captcha" in html or "access denied" in html or "sign in" in html:
+            return "RESTART"
+
         soup = BeautifulSoup(driver.page_source, "html.parser")
         values = [
             el.get_text().replace('−', '-').replace('∅', 'None')
@@ -111,6 +130,28 @@ def scrape_tradingview(driver, url):
     except WebDriverException:
         log("🛑 Browser Crash Detected")
         return "RESTART"
+
+# ✅ NEW: retries wrapper (does not change main scraping path/location)
+def scrape_with_retries(driver, url, tries=7):
+    delay = 1.0
+    for _ in range(tries):
+        values = scrape_tradingview(driver, url)
+
+        if values == "RESTART":
+            return "RESTART"
+
+        if isinstance(values, list) and values:
+            return values
+
+        # backoff + jitter
+        try:
+            driver.refresh()
+        except:
+            pass
+        time.sleep(delay + random.uniform(0.1, 0.7))
+        delay = min(delay * 1.7, 12)
+
+    return []
 
 # ---------------- INITIAL SETUP ---------------- #
 log("📊 Connecting to Google Sheets...")
@@ -131,20 +172,15 @@ except Exception as e:
 driver = create_driver()
 batch_list = []
 
-# ✅ Faster: bigger batch = fewer API calls
 BATCH_SIZE = 300
-
-# ✅ Faster: compute date once (same run)
 current_date = date.today().strftime("%m/%d/%Y")
-
-# ✅ Faster: reduce sleep (or make 0)
 ROW_SLEEP = 0.05
 
 def flush_batch():
     global batch_list
     if not batch_list:
         return
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             sheet_data.batch_update(batch_list)
             log(f"🚀 Saved {len(batch_list)} updates")
@@ -153,65 +189,55 @@ def flush_batch():
         except Exception as e:
             msg = str(e)
             log(f"⚠️ API Error: {msg[:160]}")
-            if "429" in msg:
-                log("⏳ Quota hit, sleeping 60s...")
-                time.sleep(60)
+            if "429" in msg or "quota" in msg.lower() or "rate" in msg.lower():
+                sleep_s = 60 + (SHARD_INDEX * 7)
+                log(f"⏳ Quota hit, sleeping {sleep_s}s...")
+                time.sleep(sleep_s)
             else:
-                time.sleep(3)
+                time.sleep(3 + attempt)
 
 try:
-    # ✅ Run till END (removed fixed 2500 break)
     for i in range(last_i, len(company_list)):
 
-        # ✅ Keep your sharding (only skips rows that belong to OTHER shards)
         if i % SHARD_STEP != SHARD_INDEX:
             continue
 
         url = (company_list[i] or "").strip()
         name = (name_list[i] if i < len(name_list) else f"Row {i+1}").strip()
 
-        # ✅ Skip only truly invalid URL rows (otherwise it wastes 45s timeout)
         if not url.startswith("http"):
             log(f"⏭️ Row {i+1}: invalid/blank URL -> skipped")
+            mark_failed(i, "BAD_URL")
             with open(checkpoint_file, "w") as f:
                 f.write(str(i + 1))
             continue
 
         log(f"🔍 [{i+1}/{len(company_list)}] Scraping: {name}")
 
-        # ✅ Reliability: retry ONCE if empty (extractor unchanged)
-        values = scrape_tradingview(driver, url)
-        if values == []:
-            try:
-                driver.refresh()
-                time.sleep(0.7)
-            except:
-                pass
-            values = scrape_tradingview(driver, url)
+        # ✅ only reliability improved; XPATH/class not changed
+        values = scrape_with_retries(driver, url, tries=7)
 
-        # Restart browser if crashed
         if values == "RESTART":
             try:
                 driver.quit()
             except:
                 pass
             driver = create_driver()
-            values = scrape_tradingview(driver, url)
+            values = scrape_with_retries(driver, url, tries=5)
             if values == "RESTART":
                 values = []
 
         target_row = i + 1
 
         if isinstance(values, list) and values:
-            # ✅ Only write A, J, and K onward. DO NOT touch B..I.
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
             batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
             batch_list.append({"range": f"K{target_row}", "values": [values]})
             log(f"✅ Values: {len(values)} cells | Buffered: {len(batch_list)}/{BATCH_SIZE}")
         else:
-            # Keep your behavior: still write name/date even if values missing
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
             batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
+            mark_failed(i, "NO_VALUES")
             log(f"⚠️ No values found for {name} (A/J updated only)")
 
         if len(batch_list) >= BATCH_SIZE:
@@ -230,3 +256,4 @@ finally:
     except:
         pass
     log("🏁 Scraping completed successfully")
+    log(f"📌 Failed rows file: {FAILED_FILE}")
