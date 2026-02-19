@@ -160,7 +160,7 @@ try:
     sheet_main = gc.open("Stock List").worksheet("Sheet1")
     sheet_data = gc.open("MV2 for SQL").worksheet("Sheet2")
 
-    company_list = sheet_main.col_values(3)  # URLs
+    company_list = sheet_main.col_values(4)  # URLs
     name_list = sheet_main.col_values(1)     # Names
 
     log(f"✅ Setup complete | Shard {SHARD_INDEX}/{SHARD_STEP} | Resume index {last_i} | Total {len(company_list)}")
