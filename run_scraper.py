@@ -119,8 +119,9 @@ try:
     sheet_main = gc.open("Stock List").worksheet("Sheet1")
     sheet_data = gc.open("MV2 for SQL").worksheet("Sheet2")
 
-    company_list = sheet_main.col_values(4)  # URLs
-    name_list = sheet_main.col_values(1)     # Names
+    company_list = sheet_main.col_values(4)  # URLs in column D
+    url_h_list   = sheet_main.col_values(8)  # ✅ URLs in column H
+    name_list    = sheet_main.col_values(1)  # Names
 
     log(f"✅ Setup complete | Shard {SHARD_INDEX}/{SHARD_STEP} | Resume index {last_i} | Total {len(company_list)}")
 except Exception as e:
@@ -167,47 +168,77 @@ try:
         if i % SHARD_STEP != SHARD_INDEX:
             continue
 
-        url = (company_list[i] or "").strip()
-        name = (name_list[i] if i < len(name_list) else f"Row {i+1}").strip()
+        url_d = (company_list[i] or "").strip()
+        url_h = (url_h_list[i] if i < len(url_h_list) else "").strip()  # ✅ column H url (may be blank)
+        name  = (name_list[i] if i < len(name_list) else f"Row {i+1}").strip()
 
-        # ✅ Skip only truly invalid URL rows (otherwise it wastes 45s timeout)
-        if not url.startswith("http"):
-            log(f"⏭️ Row {i+1}: invalid/blank URL -> skipped")
+        # ✅ Skip only if BOTH are invalid/blank
+        if (not url_d.startswith("http")) and (not url_h.startswith("http")):
+            log(f"⏭️ Row {i+1}: invalid/blank URLs in D & H -> skipped")
             with open(checkpoint_file, "w") as f:
                 f.write(str(i + 1))
             continue
 
         log(f"🔍 [{i+1}/{len(company_list)}] Scraping: {name}")
 
-        # ✅ Reliability: retry ONCE if empty (extractor unchanged)
-        values = scrape_tradingview(driver, url)
-        if values == []:
-            try:
-                driver.refresh()
-                time.sleep(0.7)
-            except:
-                pass
-            values = scrape_tradingview(driver, url)
+        all_values = []
 
-        # Restart browser if crashed
-        if values == "RESTART":
-            try:
-                driver.quit()
-            except:
-                pass
-            driver = create_driver()
-            values = scrape_tradingview(driver, url)
-            if values == "RESTART":
-                values = []
+        # ---- scrape D first ----
+        if url_d.startswith("http"):
+            values_d = scrape_tradingview(driver, url_d)
+            if values_d == []:
+                try:
+                    driver.refresh()
+                    time.sleep(0.7)
+                except:
+                    pass
+                values_d = scrape_tradingview(driver, url_d)
+
+            if values_d == "RESTART":
+                try:
+                    driver.quit()
+                except:
+                    pass
+                driver = create_driver()
+                values_d = scrape_tradingview(driver, url_d)
+                if values_d == "RESTART":
+                    values_d = []
+
+            if isinstance(values_d, list) and values_d:
+                all_values.extend(values_d)
+
+        # ---- scrape H second and APPEND after D values ----
+        if url_h.startswith("http"):
+            values_h = scrape_tradingview(driver, url_h)
+            if values_h == []:
+                try:
+                    driver.refresh()
+                    time.sleep(0.7)
+                except:
+                    pass
+                values_h = scrape_tradingview(driver, url_h)
+
+            if values_h == "RESTART":
+                try:
+                    driver.quit()
+                except:
+                    pass
+                driver = create_driver()
+                values_h = scrape_tradingview(driver, url_h)
+                if values_h == "RESTART":
+                    values_h = []
+
+            if isinstance(values_h, list) and values_h:
+                all_values.extend(values_h)
 
         target_row = i + 1
 
-        if isinstance(values, list) and values:
+        if isinstance(all_values, list) and all_values:
             # ✅ Only write A, J, and K onward. DO NOT touch B..I.
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
             batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
-            batch_list.append({"range": f"K{target_row}", "values": [values]})
-            log(f"✅ Values: {len(values)} cells | Buffered: {len(batch_list)}/{BATCH_SIZE}")
+            batch_list.append({"range": f"K{target_row}", "values": [all_values]})
+            log(f"✅ Values: {len(all_values)} cells (D+H) | Buffered: {len(batch_list)}/{BATCH_SIZE}")
         else:
             # Keep your behavior: still write name/date even if values missing
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
