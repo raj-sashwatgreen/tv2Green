@@ -22,19 +22,15 @@ SHARD_INDEX = int(os.getenv("SHARD_INDEX", "0"))
 SHARD_STEP  = int(os.getenv("SHARD_STEP", "1"))
 
 checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_{SHARD_INDEX}.txt")
-last_i = int(open(checkpoint_file).read()) if os.path.exists(checkpoint_file) else 0
+last_i = int(open(checkpoint_file).read().strip()) if os.path.exists(checkpoint_file) else 0
 
-# ✅ Speed: resolve chromedriver path ONCE (restart will reuse it)
 CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
 # ---------------- BROWSER FACTORY ---------------- #
 def create_driver():
     log("🌐 Initializing Hardened Chrome Instance...")
     opts = Options()
-
-    # ✅ Faster: don't wait for full page assets
     opts.page_load_strategy = "eager"
-
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -42,8 +38,6 @@ def create_driver():
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--blink-settings=imagesEnabled=false")
     opts.add_experimental_option("excludeSwitches", ["enable-logging"])
-
-    # ✅ small extra speed/consistency flags (no extractor change)
     opts.add_argument("--disable-notifications")
     opts.add_argument("--disable-popup-blocking")
     opts.add_argument("--disable-extensions")
@@ -51,77 +45,89 @@ def create_driver():
     opts.add_argument("--disable-background-timer-throttling")
     opts.add_argument("--disable-renderer-backgrounding")
     opts.add_argument("--mute-audio")
+    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
-    opts.add_argument(
-        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    )
+    driver = webdriver.Chrome(service=Service(CHROME_DRIVER_PATH), options=opts)
+    driver.set_page_load_timeout(50)
 
-    driver = webdriver.Chrome(
-        service=Service(CHROME_DRIVER_PATH),
-        options=opts
-    )
-    driver.set_page_load_timeout(40)
-
-    # ---- COOKIE LOGIC ----
     if os.path.exists("cookies.json"):
         try:
             driver.get("https://in.tradingview.com/")
-            time.sleep(2)
+            time.sleep(3)
             with open("cookies.json", "r") as f:
                 cookies = json.load(f)
-
             for c in cookies:
                 try:
-                    driver.add_cookie({
-                        k: v for k, v in c.items()
-                        if k in ("name", "value", "path", "secure", "expiry")
-                    })
+                    driver.add_cookie({k: v for k, v in c.items() if k in ("name", "value", "path", "secure", "expiry")})
                 except:
                     continue
-
             driver.refresh()
-            time.sleep(1)
+            time.sleep(2)
             log("✅ Cookies applied successfully")
         except Exception as e:
             log(f"⚠️ Cookie error: {str(e)[:80]}")
 
     return driver
 
-# ---------------- SCRAPER LOGIC ---------------- #
-# ❌ NOT CHANGED (as you asked)
-def scrape_tradingview(driver, url):
-    try:
-        driver.get(url)
-        WebDriverWait(driver, 45).until(
-            EC.visibility_of_element_located((
-                By.XPATH,
-                '/html/body/div[2]/div/div[5]/div/div[1]/div/div[2]/div[1]/div[2]/div/div[1]/div[2]/div[2]/div[2]/div[2]/div'
-            ))
-        )
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        values = [
-            el.get_text().replace('−', '-').replace('∅', 'None')
-            for el in soup.find_all("div", class_="valueValue-l31H9iuA apply-common-tooltip")
-        ]
-        return values
-    except (TimeoutException, NoSuchElementException):
-        return []
-    except WebDriverException:
-        log("🛑 Browser Crash Detected")
-        return "RESTART"
+# ---------------- URL LOGGING SCRAPER ---------------- #
+def scrape_tradingview(driver, url, url_type="", row_num=0):
+    """🔍 SHOWS EXACT URL before visiting"""
+    log(f"🔗 {'D' if url_type=='D' else 'H'}-URL: {url}")
+    
+    for attempt in range(3):
+        try:
+            log(f"   📡 Visiting {url_type} URL (attempt {attempt+1}/3)...")
+            driver.get(url)
+            
+            WebDriverWait(driver, 60).until(
+                lambda d: any([
+                    len(d.find_elements(By.CSS_SELECTOR, "[class*='valueValue']")) > 0,
+                    len(d.find_elements(By.CSS_SELECTOR, "[class*='chart']")) > 0,
+                    d.execute_script("return document.readyState") == "complete"
+                ])
+            )
+            
+            time.sleep(5)
+            
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            
+            # Multiple extraction methods
+            values1 = [el.get_text().strip().replace('−', '-').replace('∅', 'None') 
+                      for el in soup.find_all("div", class_="valueValue-l31H9iuA apply-common-tooltip") 
+                      if el.get_text().strip()]
+            
+            values2 = [el.get_text().strip().replace('−', '-').replace('∅', 'None') 
+                      for el in soup.find_all("div", class_=lambda x: x and 'valueValue' in x) 
+                      if el.get_text().strip()]
+            
+            values3 = driver.find_elements(By.XPATH, "//div[contains(@class, 'value') and contains(@class, 'Value')]")
+            values3_text = [el.text.strip().replace('−', '-').replace('∅', 'None') for el in values3 if el.text.strip()]
+            
+            values = values1 or values2 or values3_text
+            
+            if values:
+                log(f"   ✅ SUCCESS {url_type}: {len(values)} values found!")
+                return values
+            else:
+                log(f"   ⚠️ No values extracted from {url_type} page")
+                
+        except Exception as e:
+            log(f"   ❌ Attempt {attempt+1} failed: {str(e)[:60]}")
+            time.sleep(2)
+    
+    log(f"   ❌ {url_type} COMPLETELY FAILED after 3 attempts")
+    return []
 
-# ---------------- INITIAL SETUP ---------------- #
+# ---------------- SETUP ---------------- #
 log("📊 Connecting to Google Sheets...")
 try:
     gc = gspread.service_account("credentials.json")
     sheet_main = gc.open("Stock List").worksheet("Sheet1")
     sheet_data = gc.open("MV2 for SQL").worksheet("Sheet2")
 
-    company_list = sheet_main.col_values(4)  # URLs in column D
-    url_h_list   = sheet_main.col_values(8)  # ✅ URLs in column H
-    name_list    = sheet_main.col_values(1)  # Names
+    company_list = sheet_main.col_values(1)
+    url_d_list = sheet_main.col_values(4)
+    url_h_list = sheet_main.col_values(8)
 
     log(f"✅ Setup complete | Shard {SHARD_INDEX}/{SHARD_STEP} | Resume index {last_i} | Total {len(company_list)}")
 except Exception as e:
@@ -129,17 +135,11 @@ except Exception as e:
     sys.exit(1)
 
 # ---------------- MAIN LOOP ---------------- #
-driver = create_driver()
+driver = None
 batch_list = []
-
-# ✅ Faster: bigger batch = fewer API calls
-BATCH_SIZE = 10
-
-# ✅ Faster: compute date once (same run)
+BATCH_SIZE = 300
 current_date = date.today().strftime("%m/%d/%Y")
-
-# ✅ Faster: reduce sleep (or make 0)
-ROW_SLEEP = 0.05
+ROW_SLEEP = 0.2
 
 def flush_batch():
     global batch_list
@@ -155,95 +155,85 @@ def flush_batch():
             msg = str(e)
             log(f"⚠️ API Error: {msg[:160]}")
             if "429" in msg:
-                log("⏳ Quota hit, sleeping 60s...")
                 time.sleep(60)
             else:
                 time.sleep(3)
 
-try:
-    # ✅ Run till END (removed fixed 2500 break)
-    for i in range(last_i, len(company_list)):
+def ensure_driver():
+    global driver
+    if driver is None:
+        driver = create_driver()
+    return driver
 
-        # ✅ Keep your sharding (only skips rows that belong to OTHER shards)
+def restart_driver():
+    global driver
+    try:
+        if driver:
+            driver.quit()
+    except:
+        pass
+    driver = create_driver()
+    return driver
+
+def get_all_values_for_row(i):
+    """Separate drivers + URL logging"""
+    # Col D
+    driver_d = ensure_driver()
+    url_d = (url_d_list[i] if i < len(url_d_list) else "").strip()
+    values_d = []
+    if url_d.startswith("http"):
+        values_d = scrape_tradingview(driver_d, url_d, "D", i+1)
+    
+    # NEW FRESH DRIVER for Col H
+    driver_h = create_driver()
+    url_h = (url_h_list[i] if i < len(url_h_list) else "").strip()
+    values_h = []
+    if url_h.startswith("http"):
+        values_h = scrape_tradingview(driver_h, url_h, "H", i+1)
+    
+    combined_values = []
+    if isinstance(values_d, list):
+        combined_values.extend(values_d)
+    if isinstance(values_h, list):
+        combined_values.extend(values_h)
+    
+    try:
+        driver_h.quit()
+    except:
+        pass
+    
+    log(f"✅ FINAL: D={len(values_d) if isinstance(values_d,list) else 0} + H={len(values_h) if isinstance(values_h,list) else 0} = {len(combined_values)}")
+    return combined_values
+
+try:
+    for i in range(last_i, len(company_list)):
         if i % SHARD_STEP != SHARD_INDEX:
             continue
 
-        url_d = (company_list[i] or "").strip()
-        url_h = (url_h_list[i] if i < len(url_h_list) else "").strip()  # ✅ column H url (may be blank)
-        name  = (name_list[i] if i < len(name_list) else f"Row {i+1}").strip()
-
-        # ✅ Skip only if BOTH are invalid/blank
-        if (not url_d.startswith("http")) and (not url_h.startswith("http")):
-            log(f"⏭️ Row {i+1}: invalid/blank URLs in D & H -> skipped")
+        name = (company_list[i] if i < len(company_list) else f"Row {i+1}").strip()
+        url_d = (url_d_list[i] if i < len(url_d_list) else "").strip()
+        url_h = (url_h_list[i] if i < len(url_h_list) else "").strip()
+        
+        if not url_d.startswith("http") and not url_h.startswith("http"):
+            log(f"⏭️ Row {i+1}: both URLs invalid -> skipped")
             with open(checkpoint_file, "w") as f:
                 f.write(str(i + 1))
             continue
 
-        log(f"🔍 [{i+1}/{len(company_list)}] Scraping: {name}")
+        log(f"🔍 [{i+1}/{len(company_list)}] Scraping: {name} (D+H)")
 
-        all_values = []
-
-        # ---- scrape D first ----
-        if url_d.startswith("http"):
-            values_d = scrape_tradingview(driver, url_d)
-            if values_d == []:
-                try:
-                    driver.refresh()
-                    time.sleep(0.7)
-                except:
-                    pass
-                values_d = scrape_tradingview(driver, url_d)
-
-            if values_d == "RESTART":
-                try:
-                    driver.quit()
-                except:
-                    pass
-                driver = create_driver()
-                values_d = scrape_tradingview(driver, url_d)
-                if values_d == "RESTART":
-                    values_d = []
-
-            if isinstance(values_d, list) and values_d:
-                all_values.extend(values_d)
-
-        # ---- scrape H second and APPEND after D values ----
-        if url_h.startswith("http"):
-            values_h = scrape_tradingview(driver, url_h)
-            if values_h == []:
-                try:
-                    driver.refresh()
-                    time.sleep(0.7)
-                except:
-                    pass
-                values_h = scrape_tradingview(driver, url_h)
-
-            if values_h == "RESTART":
-                try:
-                    driver.quit()
-                except:
-                    pass
-                driver = create_driver()
-                values_h = scrape_tradingview(driver, url_h)
-                if values_h == "RESTART":
-                    values_h = []
-
-            if isinstance(values_h, list) and values_h:
-                all_values.extend(values_h)
-
+        combined_values = get_all_values_for_row(i)
         target_row = i + 1
 
-        if isinstance(all_values, list) and all_values:
-            # ✅ Only write A, J, and K onward. DO NOT touch B..I.
+        if combined_values:
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
             batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
-            batch_list.append({"range": f"K{target_row}", "values": [all_values]})
-            log(f"✅ Values: {len(all_values)} cells (D+H) | Buffered: {len(batch_list)}/{BATCH_SIZE}")
+            batch_list.append({"range": f"K{target_row}", "values": [combined_values]})
+            log(f"✅ COMBINED: {len(combined_values)} values | Buffered: {len(batch_list)}/{BATCH_SIZE}")
         else:
-            # Keep your behavior: still write name/date even if values missing
             batch_list.append({"range": f"A{target_row}", "values": [[name]]})
             batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
-            log(f"⚠️ No values found for {name} (A/J updated only)")
+            log(f"⚠️ No values for {name}")
 
         if len(batch_list) >= BATCH_SIZE:
             flush_batch()
@@ -251,13 +241,13 @@ try:
         with open(checkpoint_file, "w") as f:
             f.write(str(i + 1))
 
-        if ROW_SLEEP:
-            time.sleep(ROW_SLEEP)
+        time.sleep(ROW_SLEEP)
 
 finally:
     flush_batch()
     try:
-        driver.quit()
+        if driver:
+            driver.quit()
     except:
         pass
-    log("🏁 Scraping completed successfully")
+    log("🏁 Scraping completed successfully!")
