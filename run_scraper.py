@@ -133,7 +133,7 @@ driver = create_driver()
 batch_list = []
 
 # ✅ Faster: bigger batch = fewer API calls
-BATCH_SIZE = 300
+BATCH_SIZE = 10
 
 # ✅ Faster: compute date once (same run)
 current_date = date.today().strftime("%m/%d/%Y")
