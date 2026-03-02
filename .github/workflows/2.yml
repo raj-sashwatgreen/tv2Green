@@ -5,7 +5,7 @@ on:
   schedule:
     # 5:30 PM IST = 12:00 UTC
     # Runs ONLY Monday–Friday
-    - cron: '1 12 * * 1-5'
+    - cron: '30 11 * * 1-5'
 
 jobs:
   scrape:
