@@ -31,7 +31,7 @@ CHROME_DRIVER_PATH = ChromeDriverManager().install()
 def create_driver():
     log("🌐 Initializing Hardened Chrome Instance...")
     opts = Options()
-    opts.page_load_strategy = "normal" # Changed to normal to ensure full JS execution
+    opts.page_load_strategy = "normal" 
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -79,38 +79,35 @@ def scrape_tradingview(driver, url, url_type="", row_num=0):
             log(f"    📡 Visiting {url_type} (Attempt {attempt+1}/3)...")
             driver.get(url)
             
-            # --- NUMERIC GUARD: Wait for actual numbers to replace skeleton loaders ---
-            wait = WebDriverWait(driver, 30)
+            # Wait for any element with 'valueValue' to appear (even if empty/skeleton)
             try:
-                # This waits until at least one element contains a digit (0-9)
-                wait.until(lambda d: any(re.search(r'\d', el.text) for el in d.find_elements(By.CSS_SELECTOR, "[class*='valueValue']")))
+                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[class*='valueValue']")))
             except TimeoutException:
-                log(f"    ⏳ Data load slow for {url_type}, proceeding with current state...")
+                log(f"    ⏳ CSS locator not found yet, waiting...")
 
-            time.sleep(5) # Final settle time
+            time.sleep(6) # Give JS extra time to populate the actual text
             
             soup = BeautifulSoup(driver.page_source, "html.parser")
             
-            # Extraction logic (Original Paths Maintained)
-            v1 = [el.get_text().strip().replace('−', '-').replace('∅', 'None') 
-                  for el in soup.find_all("div", class_="valueValue-l31H9iuA apply-common-tooltip")]
+            # --- RAW EXTRACTION: No filtering, no numeric guards ---
+            v1 = [el.get_text().strip() for el in soup.find_all("div", class_="valueValue-l31H9iuA apply-common-tooltip")]
+            v2 = [el.get_text().strip() for el in soup.find_all("div", class_=lambda x: x and 'valueValue' in x)]
             
-            v2 = [el.get_text().strip().replace('−', '-').replace('∅', 'None') 
-                  for el in soup.find_all("div", class_=lambda x: x and 'valueValue' in x)]
-            
+            # Fallback for dynamic elements
             v3_els = driver.find_elements(By.XPATH, "//div[contains(@class, 'value') and contains(@class, 'Value')]")
-            v3 = [el.text.strip().replace('−', '-').replace('∅', 'None') for el in v3_els]
+            v3 = [el.text.strip() for el in v3_els]
             
+            # Combine all results found. We use list(dict.fromkeys()) to remove duplicates while preserving order
             raw_values = v1 or v2 or v3
             
-            # Filter: Ensure we only keep strings that have actual data (digits)
-            final_values = [v for v in raw_values if v and v != 'None' and any(char.isdigit() for char in v)]
+            # Ensure every single value is a string. If empty, keep it as empty string ""
+            final_values = [str(v) if v is not None else "" for v in raw_values]
             
             if final_values:
-                log(f"    ✅ SUCCESS {url_type}: {len(final_values)} numeric values found!")
+                log(f"    ✅ SUCCESS {url_type}: {len(final_values)} raw values captured.")
                 return final_values
             else:
-                log(f"    ⚠️ No numeric values found on {url_type}. Refreshing...")
+                log(f"    ⚠️ No values found. Retrying...")
                 driver.refresh()
                 time.sleep(3)
                 
@@ -140,7 +137,7 @@ except Exception as e:
 # ---------------- MAIN LOOP ---------------- #
 driver = None
 batch_list = []
-BATCH_SIZE = 100 # Reduced batch size for more frequent saves
+BATCH_SIZE = 100 
 current_date = date.today().strftime("%m/%d/%Y")
 ROW_SLEEP = 0.2
 
@@ -149,7 +146,8 @@ def flush_batch():
     if not batch_list: return
     for attempt in range(3):
         try:
-            sheet_data.batch_update(batch_list)
+            # RAW input option ensures Google Sheets doesn't try to "fix" or "zero" your strings
+            sheet_data.batch_update(batch_list, value_input_option='RAW')
             log(f"🚀 Saved {len(batch_list)} updates")
             batch_list = []
             return
@@ -164,12 +162,10 @@ def ensure_driver():
     return driver
 
 def get_all_values_for_row(i):
-    # D-URL
     d_driver = ensure_driver()
     url_d = (url_d_list[i] if i < len(url_d_list) else "").strip()
     vals_d = scrape_tradingview(d_driver, url_d, "D", i+1) if url_d.startswith("http") else []
     
-    # H-URL (Fresh instance per row to prevent memory leaks/sticky UI)
     h_driver = create_driver()
     url_h = (url_h_list[i] if i < len(url_h_list) else "").strip()
     vals_h = scrape_tradingview(h_driver, url_h, "H", i+1) if url_h.startswith("http") else []
@@ -187,11 +183,11 @@ try:
         combined_values = get_all_values_for_row(i)
         target_row = i + 1
 
-        # Always update name and date
         batch_list.append({"range": f"A{target_row}", "values": [[name]]})
         batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
         
         if combined_values:
+            # Send exactly what was scraped, wrapped in a list for the row
             batch_list.append({"range": f"K{target_row}", "values": [combined_values]})
             log(f"✅ Combined: {len(combined_values)} values | Buffer: {len(batch_list)}/{BATCH_SIZE*3}")
         
