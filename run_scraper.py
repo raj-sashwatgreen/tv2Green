@@ -20,7 +20,7 @@ def log(msg):
 
 # ---------------- CONFIG & SHARDING ---------------- #
 SHARD_INDEX = int(os.getenv("SHARD_INDEX", "0"))
-SHARD_STEP  = int(os.getenv("SHARD_STEP", "1"))
+SHARD_STEP  = int(os.getenv("SHARD_STEP", "25")) # Updated to match your total shard fleet
 
 checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_{SHARD_INDEX}.txt")
 last_i = int(open(checkpoint_file).read().strip()) if os.path.exists(checkpoint_file) else 0
@@ -43,27 +43,24 @@ def create_driver():
     opts.add_argument("--disable-popup-blocking")
     opts.add_argument("--disable-extensions")
     opts.add_argument("--disable-background-networking")
-    opts.add_argument("--disable-background-timer-throttling")
-    opts.add_argument("--disable-renderer-backgrounding")
     opts.add_argument("--mute-audio")
     opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     driver = webdriver.Chrome(service=Service(CHROME_DRIVER_PATH), options=opts)
-    driver.set_page_load_timeout(50)
+    driver.set_page_load_timeout(60) # Increased timeout
 
     if os.path.exists("cookies.json"):
         try:
             driver.get("https://in.tradingview.com/")
-            time.sleep(3)
+            time.sleep(5)
             with open("cookies.json", "r") as f:
                 cookies = json.load(f)
             for c in cookies:
                 try:
                     driver.add_cookie({k: v for k, v in c.items() if k in ("name", "value", "path", "secure", "expiry")})
-                except:
-                    continue
+                except: continue
             driver.refresh()
-            time.sleep(2)
+            time.sleep(3)
             log("✅ Cookies applied successfully")
         except Exception as e:
             log(f"⚠️ Cookie error: {str(e)[:80]}")
@@ -71,7 +68,7 @@ def create_driver():
     return driver
 
 # ---------------- URL LOGGING SCRAPER ---------------- #
-def scrape_tradingview(driver, url, url_type="", row_num=0):
+def scrape_tradingview(driver, url, url_type=""):
     log(f"🔗 {url_type}-URL: {url}")
     
     for attempt in range(3):
@@ -79,28 +76,24 @@ def scrape_tradingview(driver, url, url_type="", row_num=0):
             log(f"    📡 Visiting {url_type} (Attempt {attempt+1}/3)...")
             driver.get(url)
             
-            # Wait for any element with 'valueValue' to appear (even if empty/skeleton)
+            # Increased Wait to 50 seconds to ensure slow elements appear
             try:
-                WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[class*='valueValue']")))
+                WebDriverWait(driver, 50).until(EC.presence_of_element_located((By.CSS_SELECTOR, "[class*='valueValue']")))
             except TimeoutException:
-                log(f"    ⏳ CSS locator not found yet, waiting...")
+                log(f"    ⏳ CSS locator not found yet, proceeding to extra sleep...")
 
-            time.sleep(6) # Give JS extra time to populate the actual text
+            # INCREASED WAIT: Give JS extra time to populate the actual text
+            time.sleep(12) 
             
             soup = BeautifulSoup(driver.page_source, "html.parser")
             
-            # --- RAW EXTRACTION: No filtering, no numeric guards ---
             v1 = [el.get_text().strip() for el in soup.find_all("div", class_="valueValue-l31H9iuA apply-common-tooltip")]
             v2 = [el.get_text().strip() for el in soup.find_all("div", class_=lambda x: x and 'valueValue' in x)]
             
-            # Fallback for dynamic elements
             v3_els = driver.find_elements(By.XPATH, "//div[contains(@class, 'value') and contains(@class, 'Value')]")
             v3 = [el.text.strip() for el in v3_els]
             
-            # Combine all results found. We use list(dict.fromkeys()) to remove duplicates while preserving order
             raw_values = v1 or v2 or v3
-            
-            # Ensure every single value is a string. If empty, keep it as empty string ""
             final_values = [str(v) if v is not None else "" for v in raw_values]
             
             if final_values:
@@ -109,11 +102,11 @@ def scrape_tradingview(driver, url, url_type="", row_num=0):
             else:
                 log(f"    ⚠️ No values found. Retrying...")
                 driver.refresh()
-                time.sleep(3)
+                time.sleep(5)
                 
         except Exception as e:
             log(f"    ❌ Attempt {attempt+1} failed: {str(e)[:60]}")
-            time.sleep(2)
+            time.sleep(3)
     
     log(f"    ❌ {url_type} FAILED after 3 attempts")
     return []
@@ -137,16 +130,15 @@ except Exception as e:
 # ---------------- MAIN LOOP ---------------- #
 driver = None
 batch_list = []
-BATCH_SIZE = 100 
+BATCH_SIZE = 10 # Reduced batch size for more frequent updates
 current_date = date.today().strftime("%m/%d/%Y")
-ROW_SLEEP = 0.2
+ROW_SLEEP = 1.5
 
 def flush_batch():
     global batch_list
     if not batch_list: return
     for attempt in range(3):
         try:
-            # RAW input option ensures Google Sheets doesn't try to "fix" or "zero" your strings
             sheet_data.batch_update(batch_list, value_input_option='RAW')
             log(f"🚀 Saved {len(batch_list)} updates")
             batch_list = []
@@ -161,18 +153,6 @@ def ensure_driver():
     if driver is None: driver = create_driver()
     return driver
 
-def get_all_values_for_row(i):
-    d_driver = ensure_driver()
-    url_d = (url_d_list[i] if i < len(url_d_list) else "").strip()
-    vals_d = scrape_tradingview(d_driver, url_d, "D", i+1) if url_d.startswith("http") else []
-    
-    h_driver = create_driver()
-    url_h = (url_h_list[i] if i < len(url_h_list) else "").strip()
-    vals_h = scrape_tradingview(h_driver, url_h, "H", i+1) if url_h.startswith("http") else []
-    h_driver.quit()
-    
-    return vals_d + vals_h
-
 try:
     for i in range(last_i, len(company_list)):
         if i % SHARD_STEP != SHARD_INDEX: continue
@@ -180,16 +160,25 @@ try:
         name = company_list[i].strip()
         log(f"🔍 [{i+1}/{len(company_list)}] Scraping: {name}")
 
-        combined_values = get_all_values_for_row(i)
+        active_driver = ensure_driver()
+        
+        # Scrape Daily
+        url_d = (url_d_list[i] if i < len(url_d_list) else "").strip()
+        vals_d = scrape_tradingview(active_driver, url_d, "D") if url_d.startswith("http") else []
+        
+        # Scrape Hourly (Reusing the same driver is faster and more stable)
+        url_h = (url_h_list[i] if i < len(url_h_list) else "").strip()
+        vals_h = scrape_tradingview(active_driver, url_h, "H") if url_h.startswith("http") else []
+        
+        combined_values = vals_d + vals_h
         target_row = i + 1
 
         batch_list.append({"range": f"A{target_row}", "values": [[name]]})
         batch_list.append({"range": f"J{target_row}", "values": [[current_date]]})
         
         if combined_values:
-            # Send exactly what was scraped, wrapped in a list for the row
             batch_list.append({"range": f"K{target_row}", "values": [combined_values]})
-            log(f"✅ Combined: {len(combined_values)} values | Buffer: {len(batch_list)}/{BATCH_SIZE*3}")
+            log(f"✅ Combined: {len(combined_values)} values")
         
         if len(batch_list) >= (BATCH_SIZE * 3):
             flush_batch()
@@ -202,4 +191,4 @@ try:
 finally:
     flush_batch()
     if driver: driver.quit()
-    log("🏁 Scraping completed successfully!")
+    log("🏁 Scraping completed!")
