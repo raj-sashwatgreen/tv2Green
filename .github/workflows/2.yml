@@ -3,7 +3,7 @@ name: T2 Shards 5-9 (Rows 511-1020)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '35 11 * * 1-5'
+    - cron: '5 11 * * 1-5'
 
 jobs:
   scrape:
