@@ -99,34 +99,6 @@ def restart_driver():
     driver = None
     time.sleep(3)
 
-# ---------------- TARGETED EXTRACTION ---------------- #
-def extract_from_target_panel(drv):
-    selectors = [
-        "div[data-name='legend-source-item'] div[class*='valueValue']",
-        "div[class*='legend'] div[class*='valueValue']",
-        "div[class*='valuesWrapper'] div[class*='valueValue']",
-        "div[class*='container'] div[class*='valueValue']",
-    ]
-
-    for sel in selectors:
-        try:
-            elems = drv.find_elements(By.CSS_SELECTOR, sel)
-            vals = []
-            for el in elems:
-                try:
-                    if el.is_displayed():
-                        txt = el.text.strip()
-                        if txt:
-                            vals.append(txt)
-                except:
-                    pass
-            if vals:
-                return vals
-        except:
-            pass
-
-    return []
-
 # ---------------- SCRAPER ---------------- #
 def scrape_tradingview(url, url_type=""):
     if not url:
@@ -151,12 +123,20 @@ def scrape_tradingview(url, url_type=""):
             drv.execute_script("window.scrollTo(0, 0);")
             time.sleep(3)
 
-            # only necessary change: read from target panel first
-            final_values = extract_from_target_panel(drv)
+            elems = drv.find_elements(By.CSS_SELECTOR, "div[class*='valueValue']")
+            final_values = []
+
+            for el in elems:
+                try:
+                    txt = el.text.strip()
+                    if txt:
+                        final_values.append(txt)
+                except:
+                    pass
 
             if not final_values:
                 soup = BeautifulSoup(drv.page_source, "html.parser")
-                raw_values = soup.select("div[data-name='legend-source-item'] div[class*='valueValue']")
+                raw_values = soup.find_all("div", class_=lambda x: x and "valueValue" in x)
                 final_values = [el.get_text(strip=True) for el in raw_values if el.get_text(strip=True)]
 
             if final_values:
@@ -263,6 +243,7 @@ try:
         if buffered_rows >= BATCH_SIZE:
             ok = flush_batch()
 
+            # FULL FRESH START FOR NEXT BATCH
             restart_driver()
             try:
                 sheet_main, sheet_data = connect_sheets()
