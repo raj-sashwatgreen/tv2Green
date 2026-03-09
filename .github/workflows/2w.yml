@@ -1,4 +1,4 @@
-name: T2 Shards 5-9 (Rows 511-1020)
+name: T2 Shards 5-9 (Rows 511-1020) week
 
 on:
   workflow_dispatch:
