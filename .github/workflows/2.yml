@@ -1,9 +1,9 @@
-name: T1 Shard 0-4 (Rows 1-510)
+name: T2 Shards 5-9 (Rows 511-1020)
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '5 11 * * 1-5'
+    - cron: '35 11 * * 1-5'
 
 jobs:
   scrape:
@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       max-parallel: 5
       matrix:
-        shard_index: [0, 1, 2, 3, 4]
+        shard_index: [5,6,7,8,9]
 
     steps:
       - uses: actions/checkout@v4
@@ -34,5 +34,5 @@ jobs:
         env:
           SHARD_INDEX: ${{ matrix.shard_index }}
           SHARD_SIZE: 102
-          CHECKPOINT_FILE: checkpoint_${{ matrix.shard_index }}.txt
+          CHECKPOINT_FILE: checkpoint_g3_${{ matrix.shard_index }}.txt
         run: python run_scraper.py
