@@ -1,0 +1,38 @@
+name: T1 Shard 0-4 (Rows 1-510)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '5 11 * * 1-5'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-22.04
+
+    strategy:
+      fail-fast: false
+      max-parallel: 5
+      matrix:
+        shard_index: [0, 1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install selenium beautifulsoup4 gspread webdriver-manager
+
+      - name: Write credentials
+        run: |
+          echo '${{ secrets.GSPREAD_CREDENTIALS }}' > credentials.json
+          echo '${{ secrets.TRADINGVIEW_COOKIES }}' > cookies.json
+
+      - name: Run scraper
+        env:
+          SHARD_INDEX: ${{ matrix.shard_index }}
+          SHARD_SIZE: 102
+          CHECKPOINT_FILE: checkpoint_${{ matrix.shard_index }}.txt
+        run: python run_scraper1.py
