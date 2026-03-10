@@ -2,7 +2,6 @@ import sys
 import os
 import time
 import json
-import re
 from datetime import date
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -14,16 +13,27 @@ from bs4 import BeautifulSoup
 import gspread
 from webdriver_manager.chrome import ChromeDriverManager
 
+
 def log(msg):
     t = time.strftime("%H:%M:%S")
     print(f"[{t}] {msg}", flush=True)
 
-# ---------------- CONFIG & RANGE CALCULATION ---------------- #
+
+# ---------------- CONFIG ---------------- #
 SHARD_INDEX = int(os.getenv("SHARD_INDEX", "0"))
-SHARD_SIZE  = int(os.getenv("SHARD_SIZE", "500"))
+SHARD_SIZE = int(os.getenv("SHARD_SIZE", "500"))
+
 START_ROW = SHARD_INDEX * SHARD_SIZE
-END_ROW   = START_ROW + SHARD_SIZE
-checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_{SHARD_INDEX}.txt")
+END_ROW = START_ROW + SHARD_SIZE
+
+checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_day_{SHARD_INDEX}.txt")
+
+EXPECTED_COUNT = 20
+BATCH_SIZE = 50
+RESTART_EVERY_ROWS = 15
+
+COOKIE_FILE = os.getenv("COOKIE_FILE", "cookies.json")
+CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
 if os.path.exists(checkpoint_file):
     try:
@@ -33,18 +43,16 @@ if os.path.exists(checkpoint_file):
 else:
     last_i = START_ROW
 
-CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
-# ---------------- SETTINGS ---------------- #
-BATCH_SIZE = 50
-RESTART_EVERY_ROWS = 15
-EXPECTED_COUNTS = {"DAILY": 20, "HOURLY": 12}
+# ---------------- DRIVER ---------------- #
+driver = None
 
-# ---------------- BROWSER FACTORY ---------------- #
+
 def create_driver():
-    log(f"🌐 [Shard {SHARD_INDEX}] Range {START_ROW+1}-{END_ROW} | Initializing browser...")
+    log(f"🌐 [DAY] [Shard {SHARD_INDEX}] Range {START_ROW+1}-{END_ROW} | Initializing browser...")
     opts = Options()
     opts.page_load_strategy = "normal"
+
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -52,116 +60,187 @@ def create_driver():
     opts.add_argument("--window-size=1920,1080")
     opts.add_argument("--blink-settings=imagesEnabled=false")
     opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_argument("--disable-extensions")
     opts.add_argument("--incognito")
-    opts.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
-    opts.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    opts.add_experimental_option("excludeSwitches", ["enable-logging"])
+    opts.add_argument(
+        "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
 
     drv = webdriver.Chrome(service=Service(CHROME_DRIVER_PATH), options=opts)
     drv.set_page_load_timeout(90)
 
-    if os.path.exists("cookies.json"):
+    if os.path.exists(COOKIE_FILE):
         try:
             drv.get("https://in.tradingview.com/")
             time.sleep(2)
-            with open("cookies.json", "r", encoding="utf-8") as f:
+
+            with open(COOKIE_FILE, "r", encoding="utf-8") as f:
                 cookies = json.load(f)
+
             for c in cookies:
                 try:
-                    drv.add_cookie({k: v for k, v in c.items() if k in ("name", "value", "path", "secure", "expiry")})
-                except: continue
+                    drv.add_cookie({
+                        k: v for k, v in c.items()
+                        if k in ("name", "value", "path", "secure", "expiry")
+                    })
+                except:
+                    continue
+
             drv.refresh()
             time.sleep(2)
             log("✅ Cookies applied.")
         except Exception as e:
-            log(f"⚠️ Cookie error: {str(e)[:80]}")
+            log(f"⚠️ Cookie error: {str(e)[:100]}")
+
     return drv
 
-driver = None
+
 def ensure_driver():
     global driver
-    if driver is None: driver = create_driver()
+    if driver is None:
+        driver = create_driver()
     return driver
+
 
 def restart_driver():
     global driver
     try:
         if driver:
-            log("♻️ Closing browser...")
+            log("♻️ Closing DAY browser...")
             driver.quit()
-    except: pass
+    except Exception as e:
+        log(f"⚠️ Browser close issue: {str(e)[:100]}")
     driver = None
     time.sleep(3)
 
-# ---------------- SCRAPER HELPERS ---------------- #
-def wait_for_page_ready(drv, timeout=25):
-    WebDriverWait(drv, timeout).until(lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"])
 
-def get_clean_values_js(drv):
-    """Uses JS to find indicator values specifically, ignoring volume/price noise."""
-    script = """
-    return Array.from(document.querySelectorAll("div[data-name='legend-item-value']"))
-        .map(el => el.innerText.trim())
-        .filter(txt => {
-            // Filter out empty, non-numeric noise, and percentage/volume strings
-            if (!txt || txt === '∅' || txt.includes('%') || /[KMB]$/i.test(txt)) return false;
-            // Ensure it contains at least one digit
-            return /\\d/.test(txt);
-        });
-    """
+# ---------------- HELPERS ---------------- #
+def wait_for_page_ready(drv, timeout=25):
+    WebDriverWait(drv, timeout).until(
+        lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
+    )
+
+
+def get_visible_value_elements(drv):
+    elems = drv.find_elements(By.CSS_SELECTOR, "div[class*='valueValue']")
+    values = []
+
+    for el in elems:
+        try:
+            if not el.is_displayed():
+                continue
+            txt = el.text.strip()
+            if txt:
+                values.append(txt)
+        except:
+            pass
+
+    return values
+
+
+def stable_read_values(drv, pause=1.2):
+    first = get_visible_value_elements(drv)
+    time.sleep(pause)
+    second = get_visible_value_elements(drv)
+
+    if first == second and first:
+        return first
+
+    return second if len(second) >= len(first) else first
+
+
+def bs4_fallback_values(drv):
     try:
-        return drv.execute_script(script)
+        soup = BeautifulSoup(drv.page_source, "html.parser")
+        raw_values = soup.find_all("div", class_=lambda x: x and "valueValue" in x)
+        out = []
+        for el in raw_values:
+            txt = el.get_text(strip=True)
+            if txt:
+                out.append(txt)
+        return out
     except:
         return []
 
-def validate_values(values, url_type):
-    if not values: return False
-    expected = EXPECTED_COUNTS.get(url_type)
-    if len(values) != expected: return False
-    # Check if first value is roughly numeric
-    try:
-        float(values[0].replace(',', ''))
+
+def looks_like_polluted_day(values):
+    if not values:
         return True
-    except:
+    joined = " | ".join(values[:8])
+    suspicious_tokens = ["%", "K", "M", "B", "∅"]
+    suspicious_score = sum(1 for tok in suspicious_tokens if tok in joined)
+    return suspicious_score >= 2
+
+
+def validate_day(values):
+    if not values:
         return False
+    if len(values) != EXPECTED_COUNT:
+        return False
+    if looks_like_polluted_day(values):
+        return False
+    return True
+
 
 # ---------------- SCRAPER ---------------- #
-def scrape_tradingview(url, url_type=""):
-    if not url: return []
-    expected = EXPECTED_COUNTS.get(url_type, "unknown")
-    log(f"    📡 Navigating {url_type}: {url}")
+def scrape_day(url):
+    if not url:
+        return []
+
+    log(f"   📡 Navigating DAY: {url}")
 
     for attempt in range(3):
         try:
             drv = ensure_driver()
             drv.get(url)
+
             wait_for_page_ready(drv, timeout=25)
 
-            # Scroll to trigger lazy-loading of legend
-            drv.execute_script("window.scrollTo(0, 200);")
+            try:
+                WebDriverWait(drv, 20).until(
+                    lambda d: len(get_visible_value_elements(d)) >= EXPECTED_COUNT
+                )
+            except TimeoutException:
+                log("   ⚠️ DAY initial wait timeout, trying anyway...")
+
+            drv.execute_script("window.scrollTo(0, 300);")
+            time.sleep(1)
+            drv.execute_script("window.scrollTo(0, 0);")
             time.sleep(2)
 
-            # Wait for data to stabilize
-            final_values = []
-            for _ in range(5):
-                vals = get_clean_values_js(drv)
-                if len(vals) >= expected:
-                    final_values = vals
-                    break
-                time.sleep(1.5)
+            values = stable_read_values(drv, pause=1.2)
 
-            if validate_values(final_values, url_type):
-                log(f"    📊 Found {len(final_values)} clean values for {url_type}")
-                return final_values
-            
-            log(f"    ⚠️ Attempt {attempt+1} failed validation. Count: {len(final_values)}")
-            drv.refresh()
-            time.sleep(5)
+            if not validate_day(values):
+                log(f"   ⚠️ DAY invalid data on attempt {attempt+1}: count={len(values)} preview={values[:8]}")
+                try:
+                    drv.refresh()
+                    time.sleep(4)
+                    wait_for_page_ready(drv, timeout=20)
+                    values = stable_read_values(drv, pause=1.2)
+                except Exception as e:
+                    log(f"   ⚠️ DAY refresh issue: {str(e)[:100]}")
+
+            if not validate_day(values):
+                values = bs4_fallback_values(drv)
+
+            if validate_day(values):
+                log(f"   📊 Found {len(values)} correct DAY values")
+                log(f"   📝 DAY Preview: {values[:8]}...")
+                return values
+
+            log(f"   ⚠️ DAY invalid data on attempt {attempt+1}. Expected {EXPECTED_COUNT}, got {len(values)}")
+
         except Exception as e:
-            log(f"    ❌ ERROR: {str(e)[:100]}")
+            log(f"   ❌ DAY ERROR: {str(e)[:120]}")
             restart_driver()
+            time.sleep(3)
+
     return []
 
-# ---------------- SHEETS SETUP ---------------- #
+
+# ---------------- SHEETS ---------------- #
 def connect_sheets():
     log("📊 Connecting to Google Sheets...")
     gc = gspread.service_account("credentials.json")
@@ -169,68 +248,119 @@ def connect_sheets():
     sheet_data = gc.open("MV2 for SQL").worksheet("Sheet2")
     return sheet_main, sheet_data
 
+
 try:
     sheet_main, sheet_data = connect_sheets()
     company_list = sheet_main.col_values(1)
-    url_d_list = sheet_main.col_values(4)
-    url_h_list = sheet_main.col_values(8)
-    log(f"✅ Data Ready. Starting from Row {last_i + 1}")
+    url_day_list = sheet_main.col_values(4)   # D column
+    log(f"✅ DAY Data Ready. Starting from Row {last_i + 1}")
 except Exception as e:
     log(f"❌ Connection Error: {e}")
     sys.exit(1)
 
-# ---------------- MAIN LOOP ---------------- #
-batch_list, buffered_rows = [], 0
+
+# ---------------- BATCH ---------------- #
+batch_list = []
+buffered_rows = 0
 current_date = date.today().strftime("%m/%d/%Y")
-prev_daily, prev_hourly, same_count = None, None, 0
+prev_day = None
+same_count = 0
+
 
 def flush_batch():
     global batch_list, buffered_rows, sheet_data
-    if not batch_list: return True
-    log(f"🚀 UPLOADING BATCH: {buffered_rows} rows...")
+
+    if not batch_list:
+        return True
+
+    log(f"🚀 UPLOADING DAY BATCH: Sending {buffered_rows} rows...")
+
     for attempt in range(3):
         try:
-            sheet_data.batch_update(batch_list, value_input_option='RAW')
-            batch_list, buffered_rows = [], 0
+            sheet_data.batch_update(batch_list, value_input_option="RAW")
+            log("✅ DAY batch written successfully.")
+            batch_list = []
+            buffered_rows = 0
             return True
-        except:
-            time.sleep(10)
-            try: _, sheet_data = connect_sheets()
-            except: pass
+        except Exception as e:
+            log(f"⚠️ DAY API Retry {attempt+1}: {str(e)[:120]}")
+            time.sleep(8 + (attempt * 5))
+            try:
+                _, sheet_data = connect_sheets()
+            except Exception as inner_e:
+                log(f"⚠️ DAY reconnect failed: {str(inner_e)[:120]}")
+
     return False
 
+
+# ---------------- MAIN LOOP ---------------- #
 try:
     loop_end = min(END_ROW, len(company_list))
+
     for i in range(last_i, loop_end):
         name = company_list[i].strip()
-        log(f"--- [ROW {i+1}] {name} ---")
-        u_d = url_d_list[i].strip() if i < len(url_d_list) and url_d_list[i].startswith("http") else None
-        u_h = url_h_list[i].strip() if i < len(url_h_list) and url_h_list[i].startswith("http") else None
+        log(f"--- [ROW {i+1}] DAY Processing: {name} ---")
 
-        vals_d = scrape_tradingview(u_d, "DAILY") if u_d else []
-        vals_h = scrape_tradingview(u_h, "HOURLY") if u_h else []
+        u_day = url_day_list[i].strip() if i < len(url_day_list) and url_day_list[i].startswith("http") else None
+        vals_day = scrape_day(u_day) if u_day else []
 
-        if (vals_d == prev_daily and vals_h == prev_hourly) and (vals_d or vals_h):
+        if vals_day == prev_day and vals_day:
             same_count += 1
+            log(f"   ⚠️ Same DAY data repeated. Count={same_count}")
             if same_count >= 2:
+                log("   ♻️ Repeated DAY values detected. Restarting browser and retrying...")
                 restart_driver()
+                vals_day = scrape_day(u_day) if u_day else []
                 same_count = 0
-        else: same_count = 0
+        else:
+            same_count = 0
 
-        prev_daily, prev_hourly = (vals_d.copy(), vals_h.copy())
-        combined = vals_d + vals_h
+        prev_day = vals_day.copy() if vals_day else []
+
         row_idx = i + 1
         batch_list.append({"range": f"A{row_idx}", "values": [[name]]})
         batch_list.append({"range": f"J{row_idx}", "values": [[current_date]]})
-        batch_list.append({"range": f"K{row_idx}", "values": [combined] if combined else [[]]})
+        batch_list.append({"range": f"K{row_idx}", "values": [vals_day] if vals_day else [[]]})
+
         buffered_rows += 1
 
-        with open(checkpoint_file, "w") as f: f.write(str(i + 1))
-        if (i - last_i + 1) % RESTART_EVERY_ROWS == 0: restart_driver()
-        if buffered_rows >= BATCH_SIZE: 
-            flush_batch()
+        if len(vals_day) == 20:
+            log("   ✅ Correct DAY count: 20")
+        else:
+            log(f"   ⚠️ DAY count mismatch: {len(vals_day)}")
+
+        log(f"   📥 Buffered {len(vals_day)} DAY values starting from K.")
+        log(f"📈 DAY Progress: {i+1}/{loop_end} | Batch Buffer: {buffered_rows}/{BATCH_SIZE}")
+
+        with open(checkpoint_file, "w") as f:
+            f.write(str(i + 1))
+
+        processed = (i - last_i + 1)
+        if processed % RESTART_EVERY_ROWS == 0:
+            log(f"♻️ Periodic DAY browser restart after {processed} rows.")
             restart_driver()
-            sheet_main, sheet_data = connect_sheets()
+
+        if buffered_rows >= BATCH_SIZE:
+            ok = flush_batch()
+            restart_driver()
+
+            try:
+                sheet_main, sheet_data = connect_sheets()
+                company_list = sheet_main.col_values(1)
+                url_day_list = sheet_main.col_values(4)
+                log("✅ DAY fresh start ready for next batch.")
+            except Exception as e:
+                log(f"❌ DAY reconnect failed after batch: {e}")
+                break
+
+            if not ok:
+                log("❌ DAY batch upload failed.")
+                break
+
+        time.sleep(0.5)
+
 finally:
-    if batch_list: flush_batch()
+    if batch_list:
+        flush_batch()
     restart_driver()
+    log("🏁 DAY Shard Completed.")
