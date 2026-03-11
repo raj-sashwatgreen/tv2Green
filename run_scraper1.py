@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import json
+import copy
 from datetime import date
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -38,6 +39,10 @@ CHROME_DRIVER_PATH = ChromeDriverManager().install()
 DAY_OUTPUT_START_COL = 11   # K
 DAY_VALUE_COUNT = 20
 COLUMN_GAP = 10
+
+# K(11) + 20 day values => AD
+# 10 gap columns => AE to AN
+# Week starts => AO
 WEEK_OUTPUT_START_COL = DAY_OUTPUT_START_COL + DAY_VALUE_COUNT + COLUMN_GAP
 
 if os.path.exists(checkpoint_file):
@@ -58,7 +63,15 @@ def col_num_to_letter(n):
     return result
 
 
-WEEK_START_COL_LETTER = col_num_to_letter(WEEK_OUTPUT_START_COL)
+def get_end_col(start_col, count):
+    return col_num_to_letter(start_col + count - 1)
+
+
+WEEK_START_COL_LETTER = col_num_to_letter(WEEK_OUTPUT_START_COL)      # AO
+WEEK_END_COL_LETTER = get_end_col(WEEK_OUTPUT_START_COL, EXPECTED_COUNT)  # AZ
+
+log(f"📍 WEEK start column = {WEEK_START_COL_LETTER}")
+log(f"📍 WEEK end column   = {WEEK_END_COL_LETTER}")
 
 
 # ---------------- DRIVER ---------------- #
@@ -183,9 +196,7 @@ def bs4_fallback_values(drv):
 
 
 def validate_week(values):
-    if not values:
-        return False
-    return len(values) >= EXPECTED_COUNT
+    return bool(values) and len(values) >= EXPECTED_COUNT
 
 
 # ---------------- SCRAPER ---------------- #
@@ -230,7 +241,7 @@ def scrape_week(url):
                 values = bs4_fallback_values(drv)
 
             if validate_week(values):
-                values = values[:EXPECTED_COUNT]   # force only first 12
+                values = values[:EXPECTED_COUNT]
                 log(f"   📊 Found {len(values)} WEEK values")
                 log(f"   📝 WEEK Preview: {values[:8]}...")
                 return values
@@ -282,13 +293,14 @@ def flush_batch():
 
     for attempt in range(3):
         try:
-            sheet_data.batch_update(batch_list, value_input_option="RAW")
+            payload = copy.deepcopy(batch_list)
+            sheet_data.batch_update(payload, value_input_option="RAW")
             log("✅ WEEK batch written successfully.")
             batch_list = []
             buffered_rows = 0
             return True
         except Exception as e:
-            log(f"⚠️ WEEK API Retry {attempt+1}: {str(e)[:120]}")
+            log(f"⚠️ WEEK API Retry {attempt+1}: {str(e)[:200]}")
             time.sleep(8 + (attempt * 5))
             try:
                 _, sheet_data = connect_sheets()
@@ -321,23 +333,28 @@ try:
             same_count = 0
 
         prev_week = vals_week.copy() if vals_week else []
-
-        # extra safety: sheet will never get more than 12 values
         vals_week = vals_week[:EXPECTED_COUNT] if vals_week else []
 
         row_idx = i + 1
+        week_range = f"{WEEK_START_COL_LETTER}{row_idx}:{WEEK_END_COL_LETTER}{row_idx}"
+
         batch_list.append({"range": f"A{row_idx}", "values": [[name]]})
         batch_list.append({"range": f"J{row_idx}", "values": [[current_date]]})
-        batch_list.append({"range": f"{WEEK_START_COL_LETTER}{row_idx}:AP{row_idx}", "values": [vals_week + [""] * (EXPECTED_COUNT - len(vals_week))]})
+        batch_list.append({
+            "range": week_range,
+            "values": [vals_week + [""] * (EXPECTED_COUNT - len(vals_week))]
+        })
 
         buffered_rows += 1
 
-        if len(vals_week) == 12:
+        log(f"   🧪 Writing range = {week_range}")
+
+        if len(vals_week) == EXPECTED_COUNT:
             log("   ✅ Correct WEEK count: 12")
         else:
             log(f"   ⚠️ WEEK count mismatch: {len(vals_week)}")
 
-        log(f"   📥 Buffered {len(vals_week)} WEEK values starting from {WEEK_START_COL_LETTER}.")
+        log(f"   📥 Buffered {len(vals_week)} WEEK values from {WEEK_START_COL_LETTER} to {WEEK_END_COL_LETTER}.")
         log(f"📈 WEEK Progress: {i+1}/{loop_end} | Batch Buffer: {buffered_rows}/{BATCH_SIZE}")
 
         with open(checkpoint_file, "w") as f:
