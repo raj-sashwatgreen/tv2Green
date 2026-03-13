@@ -30,20 +30,16 @@ END_ROW = START_ROW + SHARD_SIZE
 checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_week_{SHARD_INDEX}.txt")
 
 EXPECTED_COUNT = 12
-BATCH_SIZE = 50
+BATCH_SIZE = 100
 RESTART_EVERY_ROWS = 15
 
 COOKIE_FILE = os.getenv("COOKIE_FILE", "cookies.json")
 CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
-DAY_OUTPUT_START_COL = 11   # K
-DAY_VALUE_COUNT = 20
-COLUMN_GAP = 10
-
-# K(11) + 20 day values => AD
-# 10 gap columns => AE to AN
-# Week starts => AO
-WEEK_OUTPUT_START_COL = DAY_OUTPUT_START_COL + DAY_VALUE_COUNT + COLUMN_GAP
+# --- REVISED COLUMN MAPPING (No Gaps) ---
+NAME_COL = "A"
+DATE_COL = "B"
+DATA_START_COL_NUM = 3  # Column C
 
 if os.path.exists(checkpoint_file):
     try:
@@ -62,27 +58,23 @@ def col_num_to_letter(n):
         result = chr(65 + rem) + result
     return result
 
-
 def get_end_col(start_col, count):
     return col_num_to_letter(start_col + count - 1)
 
+# Logic to calculate the range letters dynamically
+DATA_START_COL_LETTER = col_num_to_letter(DATA_START_COL_NUM)    # C
+DATA_END_COL_LETTER = get_end_col(DATA_START_COL_NUM, EXPECTED_COUNT) # L (if 12 values)
 
-WEEK_START_COL_LETTER = col_num_to_letter(WEEK_OUTPUT_START_COL)      # AO
-WEEK_END_COL_LETTER = get_end_col(WEEK_OUTPUT_START_COL, EXPECTED_COUNT)  # AZ
-
-log(f"📍 WEEK start column = {WEEK_START_COL_LETTER}")
-log(f"📍 WEEK end column   = {WEEK_END_COL_LETTER}")
+log(f"📍 Data will start at Column {DATA_START_COL_LETTER} and end at {DATA_END_COL_LETTER}")
 
 
 # ---------------- DRIVER ---------------- #
 driver = None
 
-
 def create_driver():
     log(f"🌐 [WEEK] [Shard {SHARD_INDEX}] Range {START_ROW+1}-{END_ROW} | Initializing browser...")
     opts = Options()
     opts.page_load_strategy = "normal"
-
     opts.add_argument("--headless=new")
     opts.add_argument("--no-sandbox")
     opts.add_argument("--disable-dev-shm-usage")
@@ -105,10 +97,8 @@ def create_driver():
         try:
             drv.get("https://in.tradingview.com/")
             time.sleep(2)
-
             with open(COOKIE_FILE, "r", encoding="utf-8") as f:
                 cookies = json.load(f)
-
             for c in cookies:
                 try:
                     drv.add_cookie({
@@ -117,22 +107,18 @@ def create_driver():
                     })
                 except:
                     continue
-
             drv.refresh()
             time.sleep(2)
             log("✅ Cookies applied.")
         except Exception as e:
             log(f"⚠️ Cookie error: {str(e)[:100]}")
-
     return drv
-
 
 def ensure_driver():
     global driver
     if driver is None:
         driver = create_driver()
     return driver
-
 
 def restart_driver():
     global driver
@@ -152,34 +138,23 @@ def wait_for_page_ready(drv, timeout=25):
         lambda d: d.execute_script("return document.readyState") in ["interactive", "complete"]
     )
 
-
 def get_visible_value_elements(drv):
     elems = drv.find_elements(By.CSS_SELECTOR, "div[class*='valueValue']")
     values = []
-
     for el in elems:
         try:
-            if not el.is_displayed():
-                continue
+            if not el.is_displayed(): continue
             txt = el.text.strip()
-            if txt:
-                values.append(txt)
-        except:
-            pass
-
+            if txt: values.append(txt)
+        except: pass
     return values
-
 
 def stable_read_values(drv, pause=1.2):
     first = get_visible_value_elements(drv)
     time.sleep(pause)
     second = get_visible_value_elements(drv)
-
-    if first == second and first:
-        return first
-
+    if first == second and first: return first
     return second if len(second) >= len(first) else first
-
 
 def bs4_fallback_values(drv):
     try:
@@ -188,12 +163,9 @@ def bs4_fallback_values(drv):
         out = []
         for el in raw_values:
             txt = el.get_text(strip=True)
-            if txt:
-                out.append(txt)
+            if txt: out.append(txt)
         return out
-    except:
-        return []
-
+    except: return []
 
 def validate_week(values):
     return bool(values) and len(values) >= EXPECTED_COUNT
@@ -201,58 +173,42 @@ def validate_week(values):
 
 # ---------------- SCRAPER ---------------- #
 def scrape_week(url):
-    if not url:
-        return []
-
-    log(f"   📡 Navigating WEEK: {url}")
-
+    if not url: return []
+    log(f"    📡 Navigating WEEK: {url}")
     for attempt in range(3):
         try:
             drv = ensure_driver()
             drv.get(url)
-
             wait_for_page_ready(drv, timeout=25)
-
             try:
                 WebDriverWait(drv, 20).until(
                     lambda d: len(get_visible_value_elements(d)) >= EXPECTED_COUNT
                 )
             except TimeoutException:
-                log("   ⚠️ WEEK initial wait timeout, trying anyway...")
+                log("    ⚠️ WEEK initial wait timeout, trying anyway...")
 
             drv.execute_script("window.scrollTo(0, 300);")
             time.sleep(1)
             drv.execute_script("window.scrollTo(0, 0);")
             time.sleep(2)
-
             values = stable_read_values(drv, pause=1.2)
 
             if not validate_week(values):
-                log(f"   ⚠️ WEEK invalid data on attempt {attempt+1}: count={len(values)} preview={values[:8]}")
-                try:
-                    drv.refresh()
-                    time.sleep(4)
-                    wait_for_page_ready(drv, timeout=20)
-                    values = stable_read_values(drv, pause=1.2)
-                except Exception as e:
-                    log(f"   ⚠️ WEEK refresh issue: {str(e)[:100]}")
+                log(f"    ⚠️ WEEK invalid data on attempt {attempt+1}: count={len(values)}")
+                drv.refresh()
+                time.sleep(4)
+                values = stable_read_values(drv, pause=1.2)
 
             if not validate_week(values):
                 values = bs4_fallback_values(drv)
 
             if validate_week(values):
                 values = values[:EXPECTED_COUNT]
-                log(f"   📊 Found {len(values)} WEEK values")
-                log(f"   📝 WEEK Preview: {values[:8]}...")
+                log(f"    📊 Found {len(values)} WEEK values")
                 return values
-
-            log(f"   ⚠️ WEEK invalid data on attempt {attempt+1}. Expected at least {EXPECTED_COUNT}, got {len(values)}")
-
         except Exception as e:
-            log(f"   ❌ WEEK ERROR: {str(e)[:120]}")
+            log(f"    ❌ WEEK ERROR: {str(e)[:120]}")
             restart_driver()
-            time.sleep(3)
-
     return []
 
 
@@ -261,14 +217,13 @@ def connect_sheets():
     log("📊 Connecting to Google Sheets...")
     gc = gspread.service_account("credentials.json")
     sheet_main = gc.open("Stock List").worksheet("Sheet1")
-    sheet_data = gc.open("MV2 for SQL").worksheet("Sheet2")
+    sheet_data = gc.open("MV2 WEEK").worksheet("Sheet1")
     return sheet_main, sheet_data
-
 
 try:
     sheet_main, sheet_data = connect_sheets()
     company_list = sheet_main.col_values(1)
-    url_week_list = sheet_main.col_values(8)   # H column
+    url_week_list = sheet_main.col_values(8)
     log(f"✅ WEEK Data Ready. Starting from Row {last_i + 1}")
 except Exception as e:
     log(f"❌ Connection Error: {e}")
@@ -282,31 +237,23 @@ current_date = date.today().strftime("%m/%d/%Y")
 prev_week = None
 same_count = 0
 
-
 def flush_batch():
     global batch_list, buffered_rows, sheet_data
-
-    if not batch_list:
-        return True
-
+    if not batch_list: return True
     log(f"🚀 UPLOADING WEEK BATCH: Sending {buffered_rows} rows...")
-
     for attempt in range(3):
         try:
             payload = copy.deepcopy(batch_list)
-            sheet_data.batch_update(payload, value_input_option="RAW")
+            # Use USER_ENTERED to handle numbers correctly
+            sheet_data.batch_update(payload, value_input_option="USER_ENTERED")
             log("✅ WEEK batch written successfully.")
             batch_list = []
             buffered_rows = 0
             return True
         except Exception as e:
             log(f"⚠️ WEEK API Retry {attempt+1}: {str(e)[:200]}")
-            time.sleep(8 + (attempt * 5))
-            try:
-                _, sheet_data = connect_sheets()
-            except Exception as inner_e:
-                log(f"⚠️ WEEK reconnect failed: {str(inner_e)[:120]}")
-
+            time.sleep(5)
+            _, sheet_data = connect_sheets()
     return False
 
 
@@ -321,71 +268,43 @@ try:
         u_week = url_week_list[i].strip() if i < len(url_week_list) and url_week_list[i].startswith("http") else None
         vals_week = scrape_week(u_week) if u_week else []
 
+        # Duplicate detection logic
         if vals_week == prev_week and vals_week:
             same_count += 1
-            log(f"   ⚠️ Same WEEK data repeated. Count={same_count}")
             if same_count >= 2:
-                log("   ♻️ Repeated WEEK values detected. Restarting browser and retrying...")
                 restart_driver()
                 vals_week = scrape_week(u_week) if u_week else []
                 same_count = 0
         else:
             same_count = 0
-
         prev_week = vals_week.copy() if vals_week else []
-        vals_week = vals_week[:EXPECTED_COUNT] if vals_week else []
 
         row_idx = i + 1
-        week_range = f"{WEEK_START_COL_LETTER}{row_idx}:{WEEK_END_COL_LETTER}{row_idx}"
-
-        batch_list.append({"range": f"A{row_idx}", "values": [[name]]})
-        batch_list.append({"range": f"J{row_idx}", "values": [[current_date]]})
+        
+        # 1. Write Name to Col A
+        batch_list.append({"range": f"{NAME_COL}{row_idx}", "values": [[name]]})
+        # 2. Write Date to Col B
+        batch_list.append({"range": f"{DATE_COL}{row_idx}", "values": [[current_date]]})
+        # 3. Write Data values to Col C onwards
+        padded_vals = vals_week + [""] * (EXPECTED_COUNT - len(vals_week))
         batch_list.append({
-            "range": week_range,
-            "values": [vals_week + [""] * (EXPECTED_COUNT - len(vals_week))]
+            "range": f"{DATA_START_COL_LETTER}{row_idx}:{DATA_END_COL_LETTER}{row_idx}",
+            "values": [padded_vals]
         })
 
         buffered_rows += 1
-
-        log(f"   🧪 Writing range = {week_range}")
-
-        if len(vals_week) == EXPECTED_COUNT:
-            log("   ✅ Correct WEEK count: 12")
-        else:
-            log(f"   ⚠️ WEEK count mismatch: {len(vals_week)}")
-
-        log(f"   📥 Buffered {len(vals_week)} WEEK values from {WEEK_START_COL_LETTER} to {WEEK_END_COL_LETTER}.")
-        log(f"📈 WEEK Progress: {i+1}/{loop_end} | Batch Buffer: {buffered_rows}/{BATCH_SIZE}")
-
         with open(checkpoint_file, "w") as f:
             f.write(str(i + 1))
 
-        processed = (i - last_i + 1)
-        if processed % RESTART_EVERY_ROWS == 0:
-            log(f"♻️ Periodic WEEK browser restart after {processed} rows.")
-            restart_driver()
-
         if buffered_rows >= BATCH_SIZE:
-            ok = flush_batch()
+            flush_batch()
             restart_driver()
+            sheet_main, sheet_data = connect_sheets()
 
-            try:
-                sheet_main, sheet_data = connect_sheets()
-                company_list = sheet_main.col_values(1)
-                url_week_list = sheet_main.col_values(8)
-                log("✅ WEEK fresh start ready for next batch.")
-            except Exception as e:
-                log(f"❌ WEEK reconnect failed after batch: {e}")
-                break
-
-            if not ok:
-                log("❌ WEEK batch upload failed.")
-                break
-
-        time.sleep(0.5)
-
-finally:
+    # Final flush
     if batch_list:
         flush_batch()
+
+finally:
     restart_driver()
     log("🏁 WEEK Shard Completed.")
