@@ -60,15 +60,30 @@ DAY_START_COL_LETTER = col_num_to_letter(DAY_OUTPUT_START_COL)
 DAY_END_COL_LETTER = col_num_to_letter(DAY_OUTPUT_START_COL + EXPECTED_COUNT - 1)
 
 
+def clean_range(rng):
+    """
+    Always keep only pure A1 notation without sheet name.
+    Example:
+    Sheet1!A10 -> A10
+    'Sheet1'!A10 -> A10
+    'Sheet1'!'Sheet1'!A10 -> A10
+    """
+    if "!" in rng:
+        rng = rng.split("!")[-1]
+    return rng.strip().replace("'", "")
+
+
 def api_retry(func, *args, **kwargs):
+    last_error = None
     for attempt in range(5):
         try:
             return func(*args, **kwargs)
         except Exception as e:
+            last_error = e
             wait = (2 ** attempt) + random.random()
-            log(f"⚠️ API issue: {str(e)[:120]} | retry in {wait:.1f}s")
+            log(f"⚠️ API issue: {str(e)[:140]} | retry in {wait:.1f}s")
             time.sleep(wait)
-    return func(*args, **kwargs)
+    raise last_error
 
 
 # ---------------- DRIVER ---------------- #
@@ -151,9 +166,6 @@ def get_values(drv):
 
 
 def wait_for_stable_values(drv, min_count=8, max_tries=6, delay=1.2):
-    """
-    Keep checking until values stabilize or best possible count found.
-    """
     best = []
 
     for _ in range(max_tries):
@@ -168,10 +180,10 @@ def wait_for_stable_values(drv, min_count=8, max_tries=6, delay=1.2):
         if len(best) >= min_count:
             time.sleep(delay)
             new_vals = get_values(drv)
-            if len(new_vals) <= len(best):
-                break
             if len(new_vals) > len(best):
                 best = new_vals
+            else:
+                break
         else:
             time.sleep(delay)
 
@@ -194,7 +206,6 @@ def scrape_day(url):
             )
 
             time.sleep(2)
-
             vals = wait_for_stable_values(drv)
 
             if len(vals) < EXPECTED_COUNT:
@@ -208,8 +219,6 @@ def scrape_day(url):
                     pass
 
             if len(vals) > 0:
-                if len(vals) < EXPECTED_COUNT:
-                    log(f"   ⚠️ Partial values found: {len(vals)}/{EXPECTED_COUNT}")
                 return (vals + [""] * EXPECTED_COUNT)[:EXPECTED_COUNT]
 
             log(f"   ⚠️ No values captured on attempt {attempt + 1}")
@@ -230,10 +239,40 @@ def connect_sheets():
     return sh_main, sh_data
 
 
+def build_row_updates(row_idx, name, current_date, vals):
+    return [
+        {"range": clean_range(f"A{row_idx}"), "values": [[name]]},
+        {"range": clean_range(f"B{row_idx}"), "values": [[current_date]]},
+        {
+            "range": clean_range(f"{DAY_START_COL_LETTER}{row_idx}:{DAY_END_COL_LETTER}{row_idx}"),
+            "values": [vals]
+        }
+    ]
+
+
+def upload_batch(sheet, updates, upto_index):
+    if not updates:
+        return
+
+    safe_updates = []
+    for item in updates:
+        safe_updates.append({
+            "range": clean_range(item["range"]),
+            "values": item["values"]
+        })
+
+    api_retry(sheet.batch_update, safe_updates, value_input_option="RAW")
+
+    with open(checkpoint_file, "w") as f:
+        f.write(str(upto_index + 1))
+
+    log(f"✅ Uploaded rows up to {upto_index + 1}")
+
+
 try:
     sheet_main, sheet_data = connect_sheets()
     company_list = api_retry(sheet_main.col_values, 1)
-    url_list = api_retry(sheet_main.col_values, 4)  # Column D
+    url_list = api_retry(sheet_main.col_values, 4)
     log(f"✅ Ready. Processing Rows {last_i + 1} to {min(END_ROW, len(company_list))}")
 except Exception as e:
     log(f"❌ Initial connection error: {e}")
@@ -243,23 +282,8 @@ except Exception as e:
 # ---------------- MAIN ---------------- #
 batch_list = []
 rows_in_batch = 0
-batch_start_i = None
 current_date = date.today().strftime("%m/%d/%Y")
 loop_end = min(END_ROW, len(company_list))
-
-
-def upload_batch(sheet, updates, upto_index):
-    if not updates:
-        return
-
-    api_retry(sheet.batch_update, updates, value_input_option="RAW")
-
-    # checkpoint only after successful upload
-    with open(checkpoint_file, "w") as f:
-        f.write(str(upto_index + 1))
-
-    log(f"✅ Uploaded rows up to {upto_index + 1}")
-
 
 try:
     for i in range(last_i, loop_end):
@@ -272,16 +296,7 @@ try:
         vals = scrape_day(url)
         row_idx = i + 1
 
-        if batch_start_i is None:
-            batch_start_i = i
-
-        batch_list.append({"range": f"A{row_idx}", "values": [[name]]})
-        batch_list.append({"range": f"B{row_idx}", "values": [[current_date]]})
-        batch_list.append({
-            "range": f"{DAY_START_COL_LETTER}{row_idx}:{DAY_END_COL_LETTER}{row_idx}",
-            "values": [vals]
-        })
-
+        batch_list.extend(build_row_updates(row_idx, name, current_date, vals))
         rows_in_batch += 1
 
         if (i + 1) % RESTART_EVERY_ROWS == 0:
@@ -292,7 +307,6 @@ try:
             upload_batch(sheet_data, batch_list, i)
             batch_list = []
             rows_in_batch = 0
-            batch_start_i = None
 
 finally:
     try:
