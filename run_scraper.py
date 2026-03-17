@@ -24,27 +24,13 @@ START_ROW = SHARD_INDEX * SHARD_SIZE
 END_ROW = START_ROW + SHARD_SIZE
 checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_day_{SHARD_INDEX}.txt")
 
-EXPECTED_COUNT = 22  # Updated to 22 as requested
-BATCH_SIZE = 50 
+EXPECTED_COUNT = 24
+BATCH_SIZE = 100
 RESTART_EVERY_ROWS = 20
 COOKIE_FILE = os.getenv("COOKIE_FILE", "cookies.json")
 CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
 DAY_OUTPUT_START_COL = 3  # Data starts in Column C
-
-# added debug columns
-STATUS_COL = "Y"
-SHEET_URL_COL = "Z"
-BROWSER_URL_COL = "AA"
-
-# ---------------- STATE ---------------- #
-if os.path.exists(checkpoint_file):
-    try:
-        last_i = max(int(open(checkpoint_file).read().strip()), START_ROW)
-    except:
-        last_i = START_ROW
-else:
-    last_i = START_ROW
 
 # ---------------- UTILS ---------------- #
 def col_num_to_letter(n):
@@ -57,8 +43,12 @@ def col_num_to_letter(n):
 DAY_START_COL_LETTER = col_num_to_letter(DAY_OUTPUT_START_COL)
 DAY_END_COL_LETTER = col_num_to_letter(DAY_OUTPUT_START_COL + EXPECTED_COUNT - 1)
 
+# Dynamic debug columns after data columns
+STATUS_COL = col_num_to_letter(DAY_OUTPUT_START_COL + EXPECTED_COUNT)
+SHEET_URL_COL = col_num_to_letter(DAY_OUTPUT_START_COL + EXPECTED_COUNT + 1)
+BROWSER_URL_COL = col_num_to_letter(DAY_OUTPUT_START_COL + EXPECTED_COUNT + 2)
+
 def api_retry(func, *args, **kwargs):
-    """Exponential backoff for Google Sheets API calls."""
     for attempt in range(5):
         try:
             return func(*args, **kwargs)
@@ -67,6 +57,15 @@ def api_retry(func, *args, **kwargs):
             log(f"⚠️ API Issue: {str(e)[:100]}. Retrying in {wait:.1f}s...")
             time.sleep(wait)
     return func(*args, **kwargs)
+
+# ---------------- STATE ---------------- #
+if os.path.exists(checkpoint_file):
+    try:
+        last_i = max(int(open(checkpoint_file).read().strip()), START_ROW)
+    except:
+        last_i = START_ROW
+else:
+    last_i = START_ROW
 
 # ---------------- DRIVER ---------------- #
 driver = None
@@ -93,15 +92,19 @@ def create_driver():
             drv.get("https://in.tradingview.com/")
             with open(COOKIE_FILE, "r", encoding="utf-8") as f:
                 cookies = json.load(f)
+
             for c in cookies:
                 try:
-                    drv.add_cookie({k: v for k, v in c.items() if k in ("name", "value", "path", "secure", "expiry")})
+                    cookie_data = {k: v for k, v in c.items() if k in ("name", "value", "path", "secure", "expiry")}
+                    drv.add_cookie(cookie_data)
                 except:
                     continue
+
             drv.refresh()
             time.sleep(2)
         except:
             pass
+
     return drv
 
 def ensure_driver():
@@ -123,8 +126,11 @@ def restart_driver():
 def get_values(drv):
     try:
         elements = drv.find_elements(By.CSS_SELECTOR, "div[class*='valueValue']")
-        return [el.text.strip() for el in elements if el.text.strip()]
-    except:
+        vals = [el.text.strip() for el in elements if el.text.strip()]
+        log(f"   Found {len(vals)} values")
+        return vals
+    except Exception as e:
+        log(f"   get_values error: {e}")
         return []
 
 def scrape_day(url):
@@ -136,24 +142,36 @@ def scrape_day(url):
             drv = ensure_driver()
             drv.get(url)
 
-            wait = WebDriverWait(drv, 15)
+            wait = WebDriverWait(drv, 20)
             wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[class*='valueValue']")))
 
-            time.sleep(1.5)
+            time.sleep(2)
             vals = get_values(drv)
 
+            # Try extra scrolls if less values found
             if len(vals) < EXPECTED_COUNT:
-                drv.execute_script("window.scrollTo(0, 500);")
-                time.sleep(1.5)
-                vals = get_values(drv)
+                for scroll_y in [500, 1000, 1500, 2000]:
+                    drv.execute_script(f"window.scrollTo(0, {scroll_y});")
+                    time.sleep(1.5)
+                    new_vals = get_values(drv)
+
+                    if len(new_vals) > len(vals):
+                        vals = new_vals
+
+                    if len(vals) >= EXPECTED_COUNT:
+                        break
 
             browser_url = drv.current_url
+            found_count = len(vals)
 
-            if len(vals) >= 1:  # Return what we found up to expected count
-                return (vals + [""] * EXPECTED_COUNT)[:EXPECTED_COUNT], "OK", url, browser_url
+            if found_count >= EXPECTED_COUNT:
+                return vals[:EXPECTED_COUNT], "OK", url, browser_url
+            else:
+                padded_vals = (vals + [""] * EXPECTED_COUNT)[:EXPECTED_COUNT]
+                return padded_vals, f"Only {found_count} Found", url, browser_url
 
         except Exception as e:
-            log(f"   ❌ Scrape Attempt {attempt+1} Failed: {str(e)[:50]}")
+            log(f"   ❌ Scrape Attempt {attempt + 1} Failed: {str(e)[:100]}")
             restart_driver()
 
     return [""] * EXPECTED_COUNT, "Failed", url, ""
@@ -168,8 +186,12 @@ def connect_sheets():
 try:
     sheet_main, sheet_data = connect_sheets()
     company_list = api_retry(sheet_main.col_values, 1)
-    url_list = api_retry(sheet_main.col_values, 4)  # DAY URL is in Column 4 (D)
+    url_list = api_retry(sheet_main.col_values, 4)  # URL in Column D
     log(f"✅ Ready. Processing Rows {last_i + 1} to {min(END_ROW, len(company_list))}")
+    log(f"✅ Data Range: {DAY_START_COL_LETTER}:{DAY_END_COL_LETTER}")
+    log(f"✅ Status Column: {STATUS_COL}")
+    log(f"✅ Sheet URL Column: {SHEET_URL_COL}")
+    log(f"✅ Browser URL Column: {BROWSER_URL_COL}")
 except Exception as e:
     log(f"❌ Initial Connection Error: {e}")
     sys.exit(1)
@@ -179,29 +201,26 @@ current_date = date.today().strftime("%m/%d/%Y")
 
 try:
     loop_end = min(END_ROW, len(company_list))
+
     for i in range(last_i, loop_end):
-        name = company_list[i].strip()
+        name = company_list[i].strip() if i < len(company_list) else ""
         url = url_list[i].strip() if i < len(url_list) and "http" in url_list[i] else None
 
-        log(f"🔍 [{i+1}/{loop_end}] {name}")
+        log(f"🔍 [{i + 1}/{loop_end}] {name}")
         vals, status, sheet_url_used, browser_url_used = scrape_day(url)
 
         row_idx = i + 1
 
-        # Build batch updates
         batch_list.append({"range": f"A{row_idx}", "values": [[name]]})
         batch_list.append({"range": f"B{row_idx}", "values": [[current_date]]})
         batch_list.append({
             "range": f"{DAY_START_COL_LETTER}{row_idx}:{DAY_END_COL_LETTER}{row_idx}",
             "values": [vals]
         })
-
-        # added status + urls only
         batch_list.append({"range": f"{STATUS_COL}{row_idx}", "values": [[status]]})
         batch_list.append({"range": f"{SHEET_URL_COL}{row_idx}", "values": [[sheet_url_used]]})
         batch_list.append({"range": f"{BROWSER_URL_COL}{row_idx}", "values": [[browser_url_used]]})
 
-        # Checkpoint every row
         with open(checkpoint_file, "w") as f:
             f.write(str(i + 1))
 
@@ -209,7 +228,7 @@ try:
             restart_driver()
 
         if len(batch_list) // 6 >= BATCH_SIZE:
-            log(f"🚀 Uploading batch of {BATCH_SIZE}...")
+            log(f"🚀 Uploading batch of {BATCH_SIZE} rows...")
             api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
             batch_list = []
 
@@ -217,5 +236,6 @@ finally:
     if batch_list:
         log("🚀 Uploading final batch...")
         api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
+
     restart_driver()
     log("🏁 DAY SHARD COMPLETED.")
