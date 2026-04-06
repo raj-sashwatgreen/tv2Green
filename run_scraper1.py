@@ -24,7 +24,7 @@ START_ROW = SHARD_INDEX * SHARD_SIZE
 END_ROW = START_ROW + SHARD_SIZE
 checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_week_{SHARD_INDEX}.txt")
 
-EXPECTED_COUNT = 15 
+EXPECTED_COUNT = 17 
 BATCH_SIZE = 100 
 RESTART_EVERY_ROWS = 20
 COOKIE_FILE = os.getenv("COOKIE_FILE", "cookies.json")
