@@ -27,7 +27,6 @@ checkpoint_file = os.getenv("CHECKPOINT_FILE", f"checkpoint_day_{SHARD_INDEX}.tx
 EXPECTED_COUNT = 26
 BATCH_SIZE = 100
 RESTART_EVERY_ROWS = 20
-MAX_RETRIES = 2  # How many extra times to try a symbol if it returns 0 values
 COOKIE_FILE = os.getenv("COOKIE_FILE", "cookies.json")
 CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
@@ -155,11 +154,10 @@ def scrape_day(url):
             browser_url = drv.current_url
             found_count = len(vals)
             if found_count >= EXPECTED_COUNT:
+                log(f"   Found {found_count} values")
                 return vals[:EXPECTED_COUNT], "OK", url, browser_url
             else:
-                log(f"   ⚠️ Only found {found_count} values on attempt {attempt+1}")
-                if attempt == 1 and found_count == 0:
-                    return [""] * EXPECTED_COUNT, "EMPTY", url, browser_url
+                log(f"   ⚠️ Only found {found_count} values")
                 padded_vals = (vals + [""] * EXPECTED_COUNT)[:EXPECTED_COUNT]
                 return padded_vals, f"Only {found_count} Found", url, browser_url
         except Exception as e:
@@ -190,9 +188,7 @@ def process_row(i, company_list, url_list, current_date):
         {"range": f"{SHEET_URL_COL}{row_idx}", "values": [[sheet_url_used]]},
         {"range": f"{BROWSER_URL_COL}{row_idx}", "values": [[browser_url_used]]}
     ]
-    # Return success only if we actually got the expected amount of data
-    is_success = (status == "OK")
-    return row_payload, is_success
+    return row_payload, (status == "OK")
 
 try:
     sheet_main, sheet_data = connect_sheets()
@@ -203,72 +199,54 @@ except Exception as e:
     log(f"❌ Initial Connection Error: {e}")
     sys.exit(1)
 
-failed_queue = []
+retry_indices = []
 batch_list = []
 current_date = date.today().strftime("%m/%d/%Y")
 loop_end = min(END_ROW, len(company_list))
 
 # --- FIRST PASS ---
-for i in range(last_i, loop_end):
-    payload, success = process_row(i, company_list, url_list, current_date)
-    batch_list.extend(payload)
-    
-    if not success:
-        failed_queue.append(i)
-
-    # Save checkpoint
-    with open(checkpoint_file, "w") as f:
-        f.write(str(i + 1))
-
-    if (i + 1) % RESTART_EVERY_ROWS == 0:
-        restart_driver()
-
-    if len(batch_list) // 6 >= BATCH_SIZE:
-        log(f"🚀 Uploading batch of {BATCH_SIZE} rows...")
-        api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
-        batch_list = []
-
-# Final upload for first pass
-if batch_list:
-    api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
-    batch_list = []
-
-# --- RETRY PASSES ---
-retry_attempt = 1
-while failed_queue and retry_attempt <= MAX_RETRIES:
-    log(f"🔁 Starting Retry Pass {retry_attempt} for {len(failed_queue)} symbols...")
-    
-    # Wait and restart driver for a clean session
-    wait_time = random.randint(15, 30)
-    log(f"⏳ Waiting {wait_time}s before retries...")
-    time.sleep(wait_time)
-    restart_driver()
-    
-    still_failing = []
-    
-    for idx, i in enumerate(failed_queue):
-        # Random sleep between symbols to avoid bot detection
-        time.sleep(random.uniform(2, 5))
-        
+try:
+    for i in range(last_i, loop_end):
         payload, success = process_row(i, company_list, url_list, current_date)
         batch_list.extend(payload)
         
         if not success:
-            still_failing.append(i)
-            
-        if (idx + 1) % 10 == 0:
+            retry_indices.append(i)
+
+        with open(checkpoint_file, "w") as f:
+            f.write(str(i + 1))
+
+        if (i + 1) % RESTART_EVERY_ROWS == 0:
+            restart_driver()
+
+        if len(batch_list) // 6 >= BATCH_SIZE:
+            log(f"🚀 Uploading batch of {BATCH_SIZE} rows...")
+            api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
+            batch_list = []
+
+finally:
+    if batch_list:
+        api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
+        batch_list = []
+
+# --- SECOND PASS (RETRIES) ---
+if retry_indices:
+    log(f"🔁 Starting Retry Pass for {len(retry_indices)} symbols...")
+    restart_driver() # Fresh start for retries
+    
+    for idx, i in enumerate(retry_indices):
+        payload, success = process_row(i, company_list, url_list, current_date)
+        batch_list.extend(payload)
+        
+        if (idx + 1) % 10 == 0: # Restart driver more frequently on retries
             restart_driver()
             
-        if len(batch_list) // 6 >= 10:
+        if len(batch_list) // 6 >= 10: # Smaller batch for retries
             api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
             batch_list = []
 
     if batch_list:
         api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
-        batch_list = []
-        
-    failed_queue = still_failing
-    retry_attempt += 1
 
 restart_driver()
-log("🏁 DAY SHARD COMPLETED.")
+log("🏁 DAY SHARD COMPLETED (Including Retries).")
