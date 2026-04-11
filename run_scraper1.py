@@ -160,7 +160,7 @@ def process_row(i, company_list, url_list, current_date):
 # ---------------- MAIN ---------------- #
 def connect_sheets():
     gc = gspread.service_account("credentials.json")
-    sh_main = gc.open("Stock List").worksheet("Sheet1")
+    sh_main = gc.open("STOCKLIST 2").worksheet("Sheet1")
     sh_data = gc.open("MV2 WEEK").worksheet("Sheet1")
     return sh_main, sh_data
 
