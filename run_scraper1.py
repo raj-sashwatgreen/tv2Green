@@ -41,7 +41,7 @@ CHECKPOINT_FILE = os.getenv(
     f"checkpoint_week_{SHARD_INDEX}.txt"
 )
 
-EXPECTED_COUNT = 24
+EXPECTED_COUNT = 25
 
 BATCH_SIZE = 100
 
