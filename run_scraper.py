@@ -43,7 +43,7 @@ COOKIE_FILE = os.getenv(
     "cookies.json"
 )
 
-EXPECTED_COUNT = 19
+EXPECTED_COUNT = 18
 
 BATCH_SIZE = 50
 
