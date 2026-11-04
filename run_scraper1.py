@@ -10,11 +10,12 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import TimeoutException
 
 import gspread
 from webdriver_manager.chrome import ChromeDriverManager
+
+
+SCRIPT_VERSION = "week-scraper v2 (EXPECTED_COUNT=25, auto-expand columns)"
 
 
 # ============================================================
@@ -36,95 +37,32 @@ SHARD_SIZE = int(os.getenv("SHARD_SIZE", "500"))
 START_ROW = SHARD_INDEX * SHARD_SIZE
 END_ROW = START_ROW + SHARD_SIZE
 
-CHECKPOINT_FILE = os.getenv(
-    "CHECKPOINT_FILE",
-    f"checkpoint_week_{SHARD_INDEX}.txt"
-)
+CHECKPOINT_FILE = os.getenv("CHECKPOINT_FILE", f"checkpoint_week_{SHARD_INDEX}.txt")
 
-EXPECTED_COUNT = 25
+# Number of values expected per chart (change here or via env var)
+EXPECTED_COUNT = int(os.getenv("EXPECTED_COUNT", "25"))
 
 BATCH_SIZE = 100
-
 RESTART_EVERY_ROWS = 20
 
-COOKIE_FILE = os.getenv(
-    "COOKIE_FILE",
-    "cookies.json"
-)
+COOKIE_FILE = os.getenv("COOKIE_FILE", "cookies.json")
 
 CHROME_DRIVER_PATH = ChromeDriverManager().install()
 
 WEEK_OUTPUT_START_COL = 3  # C
 
+# Optional: only read values from this indicator title
+INDICATOR_TITLE = os.getenv("INDICATOR_TITLE", "").strip()
 
-# ============================================================
-# OPTIONAL INDICATOR
-# ============================================================
+VALUES_TIMEOUT = int(os.getenv("VALUES_TIMEOUT", "40"))
+PAGE_LOAD_TIMEOUT = int(os.getenv("PAGE_LOAD_TIMEOUT", "60"))
 
-INDICATOR_TITLE = os.getenv(
-    "INDICATOR_TITLE",
-    ""
-).strip()
+MAX_CONSECUTIVE_FAILS = int(os.getenv("MAX_CONSECUTIVE_FAILS", "5"))
 
+DEBUG_DIR = os.getenv("DEBUG_DIR", "debug_week")
+MAX_DEBUG_SAVES = int(os.getenv("MAX_DEBUG_SAVES", "5"))
 
-# ============================================================
-# TIMEOUTS
-# ============================================================
-
-VALUES_TIMEOUT = int(
-    os.getenv(
-        "VALUES_TIMEOUT",
-        "40"
-    )
-)
-
-PAGE_LOAD_TIMEOUT = int(
-    os.getenv(
-        "PAGE_LOAD_TIMEOUT",
-        "60"
-    )
-)
-
-
-# ============================================================
-# FAILURE CONTROL
-# ============================================================
-
-MAX_CONSECUTIVE_FAILS = int(
-    os.getenv(
-        "MAX_CONSECUTIVE_FAILS",
-        "5"
-    )
-)
-
-
-# ============================================================
-# DEBUG
-# ============================================================
-
-DEBUG_DIR = os.getenv(
-    "DEBUG_DIR",
-    "debug_week"
-)
-
-MAX_DEBUG_SAVES = int(
-    os.getenv(
-        "MAX_DEBUG_SAVES",
-        "5"
-    )
-)
-
-
-# ============================================================
-# NUMBER CLEANING
-# ============================================================
-
-CLEAN_NUMBERS = (
-    os.getenv(
-        "CLEAN_NUMBERS",
-        "0"
-    ) == "1"
-)
+CLEAN_NUMBERS = os.getenv("CLEAN_NUMBERS", "0") == "1"
 
 
 # ============================================================
@@ -132,49 +70,20 @@ CLEAN_NUMBERS = (
 # ============================================================
 
 def col_num_to_letter(n):
-
     result = ""
-
     while n > 0:
-
-        n, rem = divmod(
-            n - 1,
-            26
-        )
-
-        result = (
-            chr(65 + rem)
-            + result
-        )
-
+        n, rem = divmod(n - 1, 26)
+        result = chr(65 + rem) + result
     return result
 
 
-WEEK_START_COL_LETTER = (
-    col_num_to_letter(
-        WEEK_OUTPUT_START_COL
-    )
-)
+WEEK_END_COL_NUM = WEEK_OUTPUT_START_COL + EXPECTED_COUNT - 1
+WEEK_START_COL_LETTER = col_num_to_letter(WEEK_OUTPUT_START_COL)
+WEEK_END_COL_LETTER = col_num_to_letter(WEEK_END_COL_NUM)
 
-WEEK_END_COL_LETTER = (
-    col_num_to_letter(
-        WEEK_OUTPUT_START_COL
-        + EXPECTED_COUNT
-        - 1
-    )
-)
-
-
-log(
-    f"📌 WEEK output columns: "
-    f"{WEEK_START_COL_LETTER}:"
-    f"{WEEK_END_COL_LETTER}"
-)
-
-log(
-    f"📌 Expected values: "
-    f"{EXPECTED_COUNT}"
-)
+log(f"🧾 Script version: {SCRIPT_VERSION}")
+log(f"📌 WEEK output columns: {WEEK_START_COL_LETTER}:{WEEK_END_COL_LETTER}")
+log(f"📌 Expected values: {EXPECTED_COUNT}")
 
 
 # ============================================================
@@ -186,67 +95,39 @@ const wantedTitle = arguments[0];
 
 const titles = [
     ...document.querySelectorAll('[class*="title-"]')
-].filter(
-    e => (e.innerText || '').trim() === wantedTitle
-);
+].filter(e => (e.innerText || '').trim() === wantedTitle);
 
 if (!titles.length) {
-    return {
-        found: false,
-        values: []
-    };
+    return { found: false, values: [] };
 }
 
 let node = titles[0];
 
 while (
     node &&
-    node.querySelectorAll(
-        '[class*="valueValue-"]'
-    ).length === 0
+    node.querySelectorAll('[class*="valueValue-"]').length === 0
 ) {
     node = node.parentElement;
 }
 
 if (!node) {
-    return {
-        found: true,
-        values: []
-    };
+    return { found: true, values: [] };
 }
 
-const elements = [
-    ...node.querySelectorAll(
-        '[class*="valueValue-"]'
-    )
-];
-
+const elements = [...node.querySelectorAll('[class*="valueValue-"]')];
 const values = [];
 
 for (const e of elements) {
+    const text = (e.innerText || '').trim();
+    if (!text) continue;
 
-    const text = (
-        e.innerText || ''
-    ).trim();
-
-    if (!text) {
-        continue;
-    }
-
-    const lines = text
-        .split(/\\n+/)
-        .map(x => x.trim())
-        .filter(Boolean);
-
+    const lines = text.split(/\\n+/).map(x => x.trim()).filter(Boolean);
     for (const line of lines) {
         values.push(line);
     }
 }
 
-return {
-    found: true,
-    values: values
-};
+return { found: true, values: values };
 """
 
 
@@ -254,43 +135,16 @@ return {
 # API RETRY
 # ============================================================
 
-def api_retry(
-    func,
-    *args,
-    **kwargs
-):
-
+def api_retry(func, *args, **kwargs):
     for attempt in range(5):
-
         try:
-
-            return func(
-                *args,
-                **kwargs
-            )
-
+            return func(*args, **kwargs)
         except Exception as e:
-
-            wait = (
-                2 ** attempt
-            ) + random.random()
-
-            log(
-                f"⚠️ API Issue: "
-                f"{str(e)[:100]}"
-            )
-
-            log(
-                f"🔄 Retrying in "
-                f"{wait:.1f}s..."
-            )
-
+            wait = (2 ** attempt) + random.random()
+            log(f"⚠️ API Issue: {str(e)[:100]}")
+            log(f"🔄 Retrying in {wait:.1f}s...")
             time.sleep(wait)
-
-    return func(
-        *args,
-        **kwargs
-    )
+    return func(*args, **kwargs)
 
 
 # ============================================================
@@ -298,20 +152,8 @@ def api_retry(
 # ============================================================
 
 def describe_error(e):
-
-    msg = (
-        str(e)
-        .strip()
-        .replace(
-            "\n",
-            " "
-        )
-    )
-
-    return (
-        f"{type(e).__name__}: "
-        f"{msg[:150] if msg else '(no message)'}"
-    )
+    msg = str(e).strip().replace("\n", " ")
+    return f"{type(e).__name__}: {msg[:150] if msg else '(no message)'}"
 
 
 # ============================================================
@@ -321,112 +163,48 @@ def describe_error(e):
 _debug_saves = 0
 
 
-def save_debug(
-    drv,
-    label
-):
-
+def save_debug(drv, label):
     global _debug_saves
 
-    if (
-        drv is None
-        or _debug_saves >= MAX_DEBUG_SAVES
-    ):
-
+    if drv is None or _debug_saves >= MAX_DEBUG_SAVES:
         return
 
     _debug_saves += 1
 
     try:
+        os.makedirs(DEBUG_DIR, exist_ok=True)
 
-        os.makedirs(
-            DEBUG_DIR,
-            exist_ok=True
-        )
-
-        safe = "".join(
-            ch
-            if ch.isalnum()
-            else "_"
-            for ch in label
-        )[:60]
-
-        base = os.path.join(
-            DEBUG_DIR,
-            f"{_debug_saves:02d}_{safe}"
-        )
+        safe = "".join(ch if ch.isalnum() else "_" for ch in label)[:60]
+        base = os.path.join(DEBUG_DIR, f"{_debug_saves:02d}_{safe}")
 
         try:
-
-            log(
-                f"   🧾 Page title: "
-                f"{drv.title!r}"
-            )
-
-            log(
-                f"   🧾 Current URL: "
-                f"{drv.current_url}"
-            )
-
+            log(f"   🧾 Page title: {drv.title!r}")
+            log(f"   🧾 Current URL: {drv.current_url}")
         except Exception:
             pass
 
-        drv.save_screenshot(
-            base + ".png"
-        )
+        drv.save_screenshot(base + ".png")
 
-        with open(
-            base + ".html",
-            "w",
-            encoding="utf-8"
-        ) as f:
+        with open(base + ".html", "w", encoding="utf-8") as f:
+            f.write(drv.page_source)
 
-            f.write(
-                drv.page_source
-            )
-
-        log(
-            f"   🧾 Debug saved: "
-            f"{base}.png / {base}.html"
-        )
+        log(f"   🧾 Debug saved: {base}.png / {base}.html")
 
     except Exception as e:
-
-        log(
-            f"   ⚠️ Debug save failed: "
-            f"{describe_error(e)}"
-        )
+        log(f"   ⚠️ Debug save failed: {describe_error(e)}")
 
 
 # ============================================================
 # CHECKPOINT
 # ============================================================
 
-if os.path.exists(
-    CHECKPOINT_FILE
-):
-
+if os.path.exists(CHECKPOINT_FILE):
     try:
-
-        with open(
-            CHECKPOINT_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            last_i = max(
-                int(
-                    f.read().strip()
-                ),
-                START_ROW
-            )
-
+        with open(CHECKPOINT_FILE, "r", encoding="utf-8") as f:
+            last_i = max(int(f.read().strip()), START_ROW)
     except Exception:
-
         last_i = START_ROW
-
 else:
-
     last_i = START_ROW
 
 
@@ -441,199 +219,80 @@ driver = None
 # COOKIE LOADER
 # ============================================================
 
-def load_tradingview_cookies(
-    drv
-):
-
-    if not os.path.exists(
-        COOKIE_FILE
-    ):
-
-        log(
-            f"⚠️ Cookie file not found: "
-            f"{COOKIE_FILE}"
-        )
-
+def load_tradingview_cookies(drv):
+    if not os.path.exists(COOKIE_FILE):
+        log(f"⚠️ Cookie file not found: {COOKIE_FILE}")
         return
 
     try:
-
-        log(
-            "🍪 Opening TradingView "
-            "before applying cookies..."
-        )
-
-        drv.get(
-            "https://in.tradingview.com/"
-        )
-
+        log("🍪 Opening TradingView before applying cookies...")
+        drv.get("https://in.tradingview.com/")
         time.sleep(3)
 
-        with open(
-            COOKIE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
+        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
             cookies = json.load(f)
 
-        if not isinstance(
-            cookies,
-            list
-        ):
-
-            log(
-                "⚠️ cookies.json is not a list."
-            )
-
+        if not isinstance(cookies, list):
+            log("⚠️ cookies.json is not a list.")
             return
 
         added = 0
         failed = 0
         expired = 0
-
         now = time.time()
 
         for raw_cookie in cookies:
-
             try:
-
-                if (
-                    "name"
-                    not in raw_cookie
-                    or "value"
-                    not in raw_cookie
-                ):
-
+                if "name" not in raw_cookie or "value" not in raw_cookie:
                     continue
 
                 cookie = {
-                    "name":
-                        raw_cookie["name"],
-                    "value":
-                        raw_cookie["value"]
+                    "name": raw_cookie["name"],
+                    "value": raw_cookie["value"],
                 }
 
-                # Path
-                if raw_cookie.get(
-                    "path"
-                ):
+                if raw_cookie.get("path"):
+                    cookie["path"] = raw_cookie["path"]
 
-                    cookie["path"] = (
-                        raw_cookie["path"]
-                    )
-
-                # Secure
                 if "secure" in raw_cookie:
+                    cookie["secure"] = bool(raw_cookie["secure"])
 
-                    cookie["secure"] = bool(
-                        raw_cookie["secure"]
-                    )
+                domain = raw_cookie.get("domain")
+                if domain and "tradingview.com" in domain:
+                    cookie["domain"] = domain
 
-                # Domain
-                domain = raw_cookie.get(
-                    "domain"
-                )
-
-                if domain:
-
-                    if (
-                        "tradingview.com"
-                        in domain
-                    ):
-
-                        cookie["domain"] = domain
-
-                # Expiry
-                expiry = (
-                    raw_cookie.get(
-                        "expiry"
-                    )
-                    or
-                    raw_cookie.get(
-                        "expirationDate"
-                    )
-                )
-
+                expiry = raw_cookie.get("expiry") or raw_cookie.get("expirationDate")
                 if expiry:
-
                     try:
-
-                        expiry_float = float(
-                            expiry
-                        )
-
-                        if (
-                            expiry_float
-                            < now
-                        ):
-
+                        expiry_float = float(expiry)
+                        if expiry_float < now:
                             expired += 1
-
                         else:
-
-                            cookie["expiry"] = int(
-                                expiry_float
-                            )
-
+                            cookie["expiry"] = int(expiry_float)
                     except Exception:
                         pass
 
-                # SameSite
-                same_site = raw_cookie.get(
-                    "sameSite"
-                )
+                same_site = raw_cookie.get("sameSite")
+                if same_site in ("Strict", "Lax", "None"):
+                    cookie["sameSite"] = same_site
 
-                if same_site in (
-                    "Strict",
-                    "Lax",
-                    "None"
-                ):
-
-                    cookie["sameSite"] = (
-                        same_site
-                    )
-
-                drv.add_cookie(
-                    cookie
-                )
-
+                drv.add_cookie(cookie)
                 added += 1
 
             except Exception:
-
                 failed += 1
 
-        log(
-            f"🍪 Cookies: "
-            f"{added} added, "
-            f"{failed} failed, "
-            f"{expired} expired"
-        )
+        log(f"🍪 Cookies: {added} added, {failed} failed, {expired} expired")
 
         if expired:
-
-            log(
-                "⚠️ Some cookies are expired. "
-                "Update cookies.json if login "
-                "is not retained."
-            )
+            log("⚠️ Some cookies are expired. Update cookies.json if login is not retained.")
 
         drv.refresh()
-
         time.sleep(4)
-
-        log(
-            "🍪 TradingView refreshed "
-            "after cookies."
-        )
+        log("🍪 TradingView refreshed after cookies.")
 
     except Exception as e:
-
-        log(
-            f"⚠️ Cookie loading failed: "
-            f"{describe_error(e)}"
-        )
+        log(f"⚠️ Cookie loading failed: {describe_error(e)}")
 
 
 # ============================================================
@@ -641,109 +300,33 @@ def load_tradingview_cookies(
 # ============================================================
 
 def create_driver():
-
-    log(
-        f"🌐 [WEEK Shard {SHARD_INDEX}] "
-        f"Initializing Chrome..."
-    )
+    log(f"🌐 [WEEK Shard {SHARD_INDEX}] Initializing Chrome...")
 
     opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--no-sandbox")
+    opts.add_argument("--disable-dev-shm-usage")
+    opts.add_argument("--window-size=1920,1080")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--disable-extensions")
+    opts.add_argument("--disable-notifications")
+    opts.add_argument("--disable-popup-blocking")
+    opts.add_argument("--lang=en-US")
+    opts.add_argument("--disable-blink-features=AutomationControlled")
+    opts.add_experimental_option("excludeSwitches", ["enable-automation", "enable-logging"])
 
-    opts.add_argument(
-        "--headless=new"
-    )
+    drv = webdriver.Chrome(service=Service(CHROME_DRIVER_PATH), options=opts)
+    drv.set_page_load_timeout(PAGE_LOAD_TIMEOUT)
 
-    opts.add_argument(
-        "--no-sandbox"
-    )
-
-    opts.add_argument(
-        "--disable-dev-shm-usage"
-    )
-
-    opts.add_argument(
-        "--window-size=1920,1080"
-    )
-
-    opts.add_argument(
-        "--disable-gpu"
-    )
-
-    opts.add_argument(
-        "--disable-extensions"
-    )
-
-    opts.add_argument(
-        "--disable-notifications"
-    )
-
-    opts.add_argument(
-        "--disable-popup-blocking"
-    )
-
-    opts.add_argument(
-        "--lang=en-US"
-    )
-
-    opts.add_argument(
-        "--disable-blink-features="
-        "AutomationControlled"
-    )
-
-    opts.add_experimental_option(
-        "excludeSwitches",
-        [
-            "enable-automation",
-            "enable-logging"
-        ]
-    )
-
-    drv = webdriver.Chrome(
-        service=Service(
-            CHROME_DRIVER_PATH
-        ),
-        options=opts
-    )
-
-    drv.set_page_load_timeout(
-        PAGE_LOAD_TIMEOUT
-    )
-
-    # Browser UA
     try:
-
-        ua = drv.execute_script(
-            "return navigator.userAgent"
-        )
-
-        ua = ua.replace(
-            "HeadlessChrome",
-            "Chrome"
-        )
-
-        drv.execute_cdp_cmd(
-            "Network.setUserAgentOverride",
-            {
-                "userAgent": ua
-            }
-        )
-
-        log(
-            f"   🧭 Browser: {ua}"
-        )
-
+        ua = drv.execute_script("return navigator.userAgent")
+        ua = ua.replace("HeadlessChrome", "Chrome")
+        drv.execute_cdp_cmd("Network.setUserAgentOverride", {"userAgent": ua})
+        log(f"   🧭 Browser: {ua}")
     except Exception as e:
+        log(f"   ⚠️ Could not set UA: {describe_error(e)}")
 
-        log(
-            f"   ⚠️ Could not set UA: "
-            f"{describe_error(e)}"
-        )
-
-    # Cookie login
-    load_tradingview_cookies(
-        drv
-    )
-
+    load_tradingview_cookies(drv)
     return drv
 
 
@@ -752,28 +335,19 @@ def create_driver():
 # ============================================================
 
 def ensure_driver():
-
     global driver
-
     if driver is None:
-
         driver = create_driver()
-
     return driver
 
 
 def restart_driver():
-
     global driver
-
     if driver:
-
         try:
             driver.quit()
-
         except Exception:
             pass
-
     driver = None
 
 
@@ -781,150 +355,69 @@ def restart_driver():
 # NORMAL POPUPS
 # ============================================================
 
-def close_normal_popups(
-    drv
-):
-
+def close_normal_popups(drv):
     selectors = [
-
         "button[aria-label='Close']",
-
         "button[aria-label='close']",
-
         "[data-name='close']",
-
         "[data-name='close-button']",
-
-        "[role='dialog'] "
-        "button[aria-label='Close']",
-
-        "[class*='dialog'] "
-        "button[aria-label='Close']",
-
-        "[class*='modal'] "
-        "button[aria-label='Close']",
-
+        "[role='dialog'] button[aria-label='Close']",
+        "[class*='dialog'] button[aria-label='Close']",
+        "[class*='modal'] button[aria-label='Close']",
     ]
 
     closed = 0
 
     for selector in selectors:
-
         try:
-
-            elements = drv.find_elements(
-                By.CSS_SELECTOR,
-                selector
-            )
-
+            elements = drv.find_elements(By.CSS_SELECTOR, selector)
             for element in elements:
-
                 try:
-
                     if element.is_displayed():
-
-                        drv.execute_script(
-                            "arguments[0].click();",
-                            element
-                        )
-
+                        drv.execute_script("arguments[0].click();", element)
                         closed += 1
-
-                        time.sleep(
-                            0.3
-                        )
-
+                        time.sleep(0.3)
                 except Exception:
                     pass
-
         except Exception:
             pass
 
     if closed:
-
-        log(
-            f"🧹 Closed "
-            f"{closed} normal popup(s)"
-        )
+        log(f"🧹 Closed {closed} normal popup(s)")
 
 
 # ============================================================
 # REAL VERIFICATION DETECTION
 # ============================================================
 
-def check_real_verification(
-    drv
-):
-
+def check_real_verification(drv):
     """
-    IMPORTANT:
-
-    Never use:
-
-        'captcha' in drv.page_source
-
-    TradingView can contain the word
-    captcha in JavaScript/resources even
-    when the chart is completely valid.
-
-    We only inspect visible page text.
+    Only inspects VISIBLE page text. Never checks page_source for
+    'captcha' because TradingView ships that word in normal JS bundles.
     """
-
     try:
-
-        current_url = (
-            drv.current_url
-            .lower()
-        )
-
-        body = drv.find_element(
-            By.TAG_NAME,
-            "body"
-        )
-
-        visible_text = (
-            body.text
-            .lower()
-            .strip()
-        )
+        body = drv.find_element(By.TAG_NAME, "body")
+        visible_text = body.text.lower().strip()
 
         if not visible_text:
-
             return False
 
         real_messages = [
-
             "verify you are human",
-
             "checking your browser",
-
             "access denied",
-
             "unusual traffic",
-
             "enable javascript and cookies",
-
         ]
 
         for message in real_messages:
-
             if message in visible_text:
-
-                log(
-                    f"🚨 Actual visible "
-                    f"verification detected: "
-                    f"{message}"
-                )
-
+                log(f"🚨 Actual visible verification detected: {message}")
                 return True
-
-        # We intentionally DO NOT check
-        # page_source for "captcha".
 
         return False
 
     except Exception:
-
         return False
 
 
@@ -932,51 +425,25 @@ def check_real_verification(
 # LEAF VALUE ELEMENTS
 # ============================================================
 
-def get_leaf_value_elements(
-    drv,
-    selector
-):
-
+def get_leaf_value_elements(drv, selector):
     try:
-
-        elements = drv.find_elements(
-            By.CSS_SELECTOR,
-            selector
-        )
-
+        elements = drv.find_elements(By.CSS_SELECTOR, selector)
     except Exception:
-
         return []
 
     if not elements:
-
         return []
 
     leaves = []
 
     for element in elements:
-
         try:
-
-            children = element.find_elements(
-                By.CSS_SELECTOR,
-                selector
-            )
-
-            # Parent/container contains
-            # other value elements.
-            #
-            # Ignore it.
+            children = element.find_elements(By.CSS_SELECTOR, selector)
+            # Container holding other value elements -> ignore
             if children:
-
                 continue
-
-            leaves.append(
-                element
-            )
-
+            leaves.append(element)
         except Exception:
-
             continue
 
     return leaves
@@ -986,178 +453,75 @@ def get_leaf_value_elements(
 # GET VALUES
 # ============================================================
 
-def get_values(
-    drv
-):
-
+def get_values(drv):
     """
-    Returns:
-
-        values
-        indicator_found
-
-    indicator_found is None when using
-    normal/all-values mode.
+    Returns (values, indicator_found).
+    indicator_found is None in normal/all-values mode.
     """
-
     try:
-
-        # ----------------------------------------------------
-        # INDICATOR MODE
-        # ----------------------------------------------------
-
+        # ---------------- INDICATOR MODE ----------------
         if INDICATOR_TITLE:
-
-            result = drv.execute_script(
-                GET_INDICATOR_VALUES_JS,
-                INDICATOR_TITLE
-            ) or {}
+            result = drv.execute_script(GET_INDICATOR_VALUES_JS, INDICATOR_TITLE) or {}
 
             values = []
-
-            for value in result.get(
-                "values",
-                []
-            ):
-
+            for value in result.get("values", []):
                 if not value:
                     continue
+                lines = [x.strip() for x in value.splitlines() if x.strip()]
+                values.extend(lines)
 
-                lines = [
-                    x.strip()
-                    for x in value.splitlines()
-                    if x.strip()
-                ]
+            return values, bool(result.get("found"))
 
-                values.extend(
-                    lines
-                )
-
-            return (
-                values,
-                bool(
-                    result.get(
-                        "found"
-                    )
-                )
-            )
-
-        # ----------------------------------------------------
-        # NORMAL MODE
-        # ----------------------------------------------------
-
+        # ---------------- NORMAL MODE ----------------
         selectors = [
-
             "[class*='valueValue']",
-
             "[class*='valueValue-']",
-
             "[data-name='legend-source-item-value']",
-
             "[data-name='legend-series-item-value']",
-
         ]
 
         best_values = []
 
         for selector in selectors:
-
-            elements = (
-                get_leaf_value_elements(
-                    drv,
-                    selector
-                )
-            )
+            elements = get_leaf_value_elements(drv, selector)
 
             if not elements:
                 continue
 
             values = []
-
             seen_elements = set()
 
             for element in elements:
-
                 try:
-
                     element_id = element.id
-
-                    if (
-                        element_id
-                        in seen_elements
-                    ):
-
+                    if element_id in seen_elements:
                         continue
+                    seen_elements.add(element_id)
 
-                    seen_elements.add(
-                        element_id
-                    )
-
-                    text = (
-                        element.text
-                        .strip()
-                    )
-
+                    text = element.text.strip()
                     if not text:
-
                         continue
 
-                    lines = [
-                        x.strip()
-                        for x
-                        in text.splitlines()
-                        if x.strip()
-                    ]
+                    lines = [x.strip() for x in text.splitlines() if x.strip()]
 
-                    # IMPORTANT:
-                    # duplicates are preserved.
-                    values.extend(
-                        lines
-                    )
+                    # Duplicates are intentionally preserved
+                    values.extend(lines)
 
                 except Exception:
-
                     continue
 
-            log(
-                f"🔎 {selector} -> "
-                f"{len(values)} values"
-            )
+            log(f"🔎 {selector} -> {len(values)} values")
 
-            if (
-                len(values)
-                > len(best_values)
-            ):
-
+            if len(values) > len(best_values):
                 best_values = values
 
-            if (
-                len(values)
-                >= EXPECTED_COUNT
-            ):
+            if len(values) >= EXPECTED_COUNT:
+                return values[:EXPECTED_COUNT], None
 
-                return (
-                    values[
-                        :EXPECTED_COUNT
-                    ],
-                    None
-                )
-
-        return (
-            best_values[
-                :EXPECTED_COUNT
-            ],
-            None
-        )
+        return best_values[:EXPECTED_COUNT], None
 
     except Exception as e:
-
-        log(
-            f"   ⚠️ Value extraction "
-            f"error: "
-            f"{describe_error(e)}"
-        )
-
+        log(f"   ⚠️ Value extraction error: {describe_error(e)}")
         return [], False
 
 
@@ -1165,360 +529,135 @@ def get_values(
 # CLEAN VALUE
 # ============================================================
 
-def clean_value(
-    value
-):
-
+def clean_value(value):
     if not CLEAN_NUMBERS:
-
         return value
-
-    return (
-        value
-        .replace(
-            "−",
-            "-"
-        )
-        .replace(
-            ",",
-            ""
-        )
-    )
+    return value.replace("−", "-").replace(",", "")
 
 
 # ============================================================
 # WAIT FOR VALUES
 # ============================================================
 
-def wait_for_values(
-    drv,
-    timeout
-):
-
+def wait_for_values(drv, timeout):
     start = time.time()
-
     best_values = []
+    found = None
 
-    while (
-        time.time() - start
-        < timeout
-    ):
-
+    while time.time() - start < timeout:
         try:
+            close_normal_popups(drv)
 
-            close_normal_popups(
-                drv
-            )
+            values, found = get_values(drv)
 
-            values, found = (
-                get_values(
-                    drv
-                )
-            )
-
-            if (
-                len(values)
-                > len(best_values)
-            ):
-
+            if len(values) > len(best_values):
                 best_values = values
+                log(f"📊 Values found: {len(best_values)}/{EXPECTED_COUNT}")
 
-                log(
-                    f"📊 Values found: "
-                    f"{len(best_values)}/"
-                    f"{EXPECTED_COUNT}"
-                )
-
-            if (
-                len(best_values)
-                >= EXPECTED_COUNT
-            ):
-
-                return (
-                    best_values[
-                        :EXPECTED_COUNT
-                    ],
-                    found
-                )
+            if len(best_values) >= EXPECTED_COUNT:
+                return best_values[:EXPECTED_COUNT], found
 
         except Exception as e:
-
-            log(
-                f"⚠️ Waiting error: "
-                f"{describe_error(e)}"
-            )
+            log(f"⚠️ Waiting error: {describe_error(e)}")
 
         time.sleep(1)
 
-    return (
-        best_values[
-            :EXPECTED_COUNT
-        ],
-        None
-    )
+    return best_values[:EXPECTED_COUNT], found
 
 
 # ============================================================
 # SCRAPE WEEK
 # ============================================================
 
-def scrape_week(
-    url,
-    label=""
-):
-
+def scrape_week(url, label=""):
     if not url:
-
         return [], False
 
-    for attempt in range(
-        1,
-        4
-    ):
-
+    for attempt in range(1, 4):
         drv = None
 
         try:
-
             drv = ensure_driver()
 
-            log(
-                f"🌐 Opening URL "
-                f"(attempt {attempt}/3)"
-            )
+            log(f"🌐 Opening URL (attempt {attempt}/3)")
+            log(f"🔗 {url}")
 
-            log(
-                f"🔗 {url}"
-            )
+            drv.get(url)
 
-            drv.get(
-                url
-            )
-
-            # ------------------------------------------------
             # Initial rendering
-            # ------------------------------------------------
-
             time.sleep(5)
 
-            log(
-                f"📄 Title: "
-                f"{drv.title}"
-            )
+            log(f"📄 Title: {drv.title}")
+            log(f"🌐 Current URL: {drv.current_url}")
 
-            log(
-                f"🌐 Current URL: "
-                f"{drv.current_url}"
-            )
-
-            # ------------------------------------------------
-            # IMPORTANT:
-            # Don't use "captcha" in page_source.
-            # ------------------------------------------------
-
-            if check_real_verification(
-                drv
-            ):
-
-                log(
-                    "⚠️ Actual visible "
-                    "verification page."
-                )
-
-                save_debug(
-                    drv,
-                    f"{label}_verification"
-                )
-
+            if check_real_verification(drv):
+                log("⚠️ Actual visible verification page.")
+                save_debug(drv, f"{label}_verification")
                 restart_driver()
 
                 if attempt < 3:
-
-                    time.sleep(
-                        5 + attempt
-                    )
-
+                    time.sleep(5 + attempt)
                     continue
 
                 return [], False
 
-            # ------------------------------------------------
-            # Close normal popups
-            # ------------------------------------------------
+            close_normal_popups(drv)
 
-            close_normal_popups(
-                drv
-            )
+            # Wait for all expected values
+            vals, found = wait_for_values(drv, VALUES_TIMEOUT)
 
-            # ------------------------------------------------
-            # Wait for 24 values
-            # ------------------------------------------------
+            # ---------------- SUCCESS ----------------
+            if len(vals) >= EXPECTED_COUNT:
+                vals = [clean_value(v) for v in vals[:EXPECTED_COUNT]]
 
-            vals, found = (
-                wait_for_values(
-                    drv,
-                    VALUES_TIMEOUT
-                )
-            )
+                log(f"✅ SUCCESS: {len(vals)}/{EXPECTED_COUNT}")
 
-            # ------------------------------------------------
-            # SUCCESS
-            # ------------------------------------------------
-
-            if (
-                len(vals)
-                >= EXPECTED_COUNT
-            ):
-
-                vals = [
-                    clean_value(v)
-                    for v in vals[
-                        :EXPECTED_COUNT
-                    ]
-                ]
-
-                log(
-                    f"✅ SUCCESS: "
-                    f"{len(vals)}/"
-                    f"{EXPECTED_COUNT}"
-                )
-
-                for number, value in enumerate(
-                    vals,
-                    start=1
-                ):
-
-                    log(
-                        f"   {number:02d}: "
-                        f"{value}"
-                    )
+                for number, value in enumerate(vals, start=1):
+                    log(f"   {number:02d}: {value}")
 
                 return vals, True
 
-            # ------------------------------------------------
-            # FAILURE REASON
-            # ------------------------------------------------
-
-            if (
-                INDICATOR_TITLE
-                and found is False
-            ):
-
-                reason = (
-                    f"indicator "
-                    f"'{INDICATOR_TITLE}' "
-                    f"not found"
-                )
-
+            # ---------------- FAILURE REASON ----------------
+            if INDICATOR_TITLE and found is False:
+                reason = f"indicator '{INDICATOR_TITLE}' not found"
             elif not vals:
-
-                reason = (
-                    "no values found"
-                )
-
+                reason = "no values found"
             else:
+                reason = f"only {len(vals)}/{EXPECTED_COUNT} values found"
 
-                reason = (
-                    f"only "
-                    f"{len(vals)}/"
-                    f"{EXPECTED_COUNT} "
-                    f"values found"
-                )
-
-            log(
-                f"⚠️ Attempt {attempt}: "
-                f"{reason}"
-            )
+            log(f"⚠️ Attempt {attempt}: {reason}")
 
             if vals:
+                log("📋 Partial values:")
+                for number, value in enumerate(vals, start=1):
+                    log(f"   {number:02d}: {value}")
 
-                log(
-                    "📋 Partial values:"
-                )
-
-                for number, value in enumerate(
-                    vals,
-                    start=1
-                ):
-
-                    log(
-                        f"   {number:02d}: "
-                        f"{value}"
-                    )
-
-            save_debug(
-                drv,
-                f"{label}_attempt{attempt}"
-            )
-
-            # ------------------------------------------------
-            # Retry same browser once
-            # ------------------------------------------------
+            save_debug(drv, f"{label}_attempt{attempt}")
 
             if attempt == 1:
-
-                log(
-                    "🔄 Retrying same "
-                    "browser..."
-                )
-
+                log("🔄 Retrying same browser...")
                 time.sleep(3)
-
                 continue
-
-            # ------------------------------------------------
-            # Restart browser for final retry
-            # ------------------------------------------------
 
             if attempt == 2:
-
-                log(
-                    "♻️ Restarting Chrome "
-                    "before final retry..."
-                )
-
+                log("♻️ Restarting Chrome before final retry...")
                 restart_driver()
-
                 time.sleep(5)
-
                 continue
 
-            # ------------------------------------------------
             # Final failure
-            # ------------------------------------------------
-
-            vals = [
-                clean_value(v)
-                for v in vals
-            ]
-
+            vals = [clean_value(v) for v in vals]
             return vals, False
 
         except Exception as e:
+            log(f"❌ Scrape Attempt {attempt}/3 Failed: {describe_error(e)}")
+            log(traceback.format_exc().strip()[-800:])
 
-            log(
-                f"❌ Scrape Attempt "
-                f"{attempt}/3 Failed: "
-                f"{describe_error(e)}"
-            )
-
-            log(
-                traceback.format_exc()
-                .strip()[-800:]
-            )
-
-            save_debug(
-                drv,
-                f"{label}_error{attempt}"
-            )
-
+            save_debug(drv, f"{label}_error{attempt}")
             restart_driver()
 
             if attempt < 3:
-
-                time.sleep(
-                    3 + attempt
-                )
+                time.sleep(3 + attempt)
 
     return [], False
 
@@ -1527,95 +666,37 @@ def scrape_week(
 # PROCESS ROW
 # ============================================================
 
-def process_row(
-    i,
-    company_list,
-    url_list,
-    current_date
-):
-
-    name = (
-        company_list[i].strip()
-        if i < len(company_list)
-        else "Unknown"
-    )
+def process_row(i, company_list, url_list, current_date):
+    name = company_list[i].strip() if i < len(company_list) else "Unknown"
 
     url = (
-
         url_list[i].strip()
-
-        if (
-            i < len(url_list)
-            and "http"
-            in url_list[i]
-        )
-
+        if i < len(url_list) and "http" in url_list[i]
         else None
     )
 
-    log(
-        f"🔍 [{i + 1}] "
-        f"{name} | "
-        f"URL: "
-        f"{url if url else 'No URL'}"
-    )
+    log(f"🔍 [{i + 1}] {name} | URL: {url if url else 'No URL'}")
 
-    vals, is_success = scrape_week(
-        url,
-        label=f"{i + 1}_{name}"
-    )
+    vals, is_success = scrape_week(url, label=f"{i + 1}_{name}")
 
-    # --------------------------------------------------------
-    # EXACTLY 24 CELLS
-    # --------------------------------------------------------
+    # Exactly EXPECTED_COUNT cells
+    padded_vals = (vals + [""] * EXPECTED_COUNT)[:EXPECTED_COUNT]
 
-    padded_vals = (
-        vals
-        + [""] * EXPECTED_COUNT
-    )[:EXPECTED_COUNT]
-
-    assert (
-        len(padded_vals)
-        == EXPECTED_COUNT
-    )
+    assert len(padded_vals) == EXPECTED_COUNT
 
     row_idx = i + 1
 
     row_payload = [
-
+        {"range": f"A{row_idx}", "values": [[name]]},
+        {"range": f"B{row_idx}", "values": [[current_date]]},
         {
-            "range":
-                f"A{row_idx}",
-            "values":
-                [[name]]
+            "range": f"{WEEK_START_COL_LETTER}{row_idx}:{WEEK_END_COL_LETTER}{row_idx}",
+            "values": [padded_vals],
         },
-
-        {
-            "range":
-                f"B{row_idx}",
-            "values":
-                [[current_date]]
-        },
-
-        {
-            "range":
-                f"{WEEK_START_COL_LETTER}"
-                f"{row_idx}:"
-                f"{WEEK_END_COL_LETTER}"
-                f"{row_idx}",
-
-            "values":
-                [padded_vals]
-        }
-
     ]
 
     # Rows without URL are not failures
-    return (
-        row_payload,
-        is_success,
-        bool(url)
-    )
+    return row_payload, is_success, bool(url)
 
 
 # ============================================================
@@ -1623,27 +704,30 @@ def process_row(
 # ============================================================
 
 def connect_sheets():
+    gc = gspread.service_account("credentials.json")
 
-    gc = gspread.service_account(
-        "credentials.json"
-    )
+    sh_main = gc.open("Stock List").worksheet("Sheet1")
+    sh_data = gc.open("MV2 WEEK").worksheet("Sheet1")
 
-    sh_main = gc.open(
-        "Stock List"
-    ).worksheet(
-        "Sheet1"
-    )
+    return sh_main, sh_data
 
-    sh_data = gc.open(
-        "MV2 WEEK"
-    ).worksheet(
-        "Sheet1"
-    )
 
-    return (
-        sh_main,
-        sh_data
-    )
+def ensure_sheet_columns(ws, needed_cols):
+    """
+    A new Google Sheet has only 26 columns (A:Z). Writing to column AA
+    or beyond fails unless the grid is expanded first.
+    """
+    try:
+        current = ws.col_count
+        if current < needed_cols:
+            add = needed_cols - current
+            log(f"📐 Sheet has {current} columns, need {needed_cols}. Adding {add}...")
+            api_retry(ws.add_cols, add)
+            log("📐 Columns added.")
+        else:
+            log(f"📐 Sheet columns OK ({current} >= {needed_cols})")
+    except Exception as e:
+        log(f"⚠️ Could not verify/expand columns: {describe_error(e)}")
 
 
 # ============================================================
@@ -1651,51 +735,30 @@ def connect_sheets():
 # ============================================================
 
 try:
+    sheet_main, sheet_data = connect_sheets()
 
-    sheet_main, sheet_data = (
-        connect_sheets()
-    )
+    ensure_sheet_columns(sheet_data, WEEK_END_COL_NUM)
 
-    company_list = api_retry(
-        sheet_main.col_values,
-        1
-    )
+    company_list = api_retry(sheet_main.col_values, 1)
 
     # WEEK URL = Column H
-    url_list = api_retry(
-        sheet_main.col_values,
-        8
-    )
+    url_list = api_retry(sheet_main.col_values, 8)
 
-    loop_end = min(
-        END_ROW,
-        len(company_list)
-    )
+    loop_end = min(END_ROW, len(company_list))
 
-    log(
-        f"✅ Ready. Processing "
-        f"Rows {last_i + 1} "
-        f"to {loop_end}"
-    )
+    log(f"✅ Ready. Processing Rows {last_i + 1} to {loop_end}")
 
     log(
         "   Mode: "
         + (
-            "indicator "
-            + repr(INDICATOR_TITLE)
+            "indicator " + repr(INDICATOR_TITLE)
             if INDICATOR_TITLE
-            else
-            "all values on page"
+            else "all values on page"
         )
     )
 
 except Exception as e:
-
-    log(
-        f"❌ Initial Connection Error: "
-        f"{describe_error(e)}"
-    )
-
+    log(f"❌ Initial Connection Error: {describe_error(e)}")
     sys.exit(1)
 
 
@@ -1704,17 +767,12 @@ except Exception as e:
 # ============================================================
 
 retry_indices = []
-
 batch_list = []
 
-current_date = date.today().strftime(
-    "%m/%d/%Y"
-)
+current_date = date.today().strftime("%m/%d/%Y")
 
 consecutive_fails = 0
-
 streak_start = None
-
 aborted = False
 
 
@@ -1723,156 +781,58 @@ aborted = False
 # ============================================================
 
 try:
+    for i in range(last_i, loop_end):
 
-    for i in range(
-        last_i,
-        loop_end
-    ):
+        payload, success, had_url = process_row(i, company_list, url_list, current_date)
 
-        payload, success, had_url = (
-            process_row(
-                i,
-                company_list,
-                url_list,
-                current_date
-            )
-        )
+        batch_list.extend(payload)
 
-        batch_list.extend(
-            payload
-        )
-
-        if not success:
-
+        # Only rows that HAVE a URL and failed are worth retrying
+        if had_url and not success:
             retry_indices.append(i)
 
-        # --------------------------------------------
-        # Consecutive failures
-        # --------------------------------------------
-
-        if (
-            had_url
-            and not success
-        ):
-
-            if (
-                consecutive_fails
-                == 0
-            ):
-
+        # ---------------- Consecutive failures ----------------
+        if had_url and not success:
+            if consecutive_fails == 0:
                 streak_start = i
-
             consecutive_fails += 1
-
         elif success:
-
             consecutive_fails = 0
-
             streak_start = None
 
-        # --------------------------------------------
-        # Checkpoint
-        # --------------------------------------------
+        # ---------------- Checkpoint ----------------
+        with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+            f.write(str(i + 1))
 
-        with open(
-            CHECKPOINT_FILE,
-            "w",
-            encoding="utf-8"
-        ) as f:
+        # ---------------- Stop after consecutive failures ----------------
+        if MAX_CONSECUTIVE_FAILS and consecutive_fails >= MAX_CONSECUTIVE_FAILS:
+            log(f"🛑 {consecutive_fails} symbols in a row failed.")
+            log("🛑 Stopping WEEK shard.")
 
-            f.write(
-                str(i + 1)
-            )
-
-        # --------------------------------------------
-        # Stop after consecutive failures
-        # --------------------------------------------
-
-        if (
-            MAX_CONSECUTIVE_FAILS
-            and
-            consecutive_fails
-            >= MAX_CONSECUTIVE_FAILS
-        ):
-
-            log(
-                f"🛑 "
-                f"{consecutive_fails} "
-                f"symbols in a row failed."
-            )
-
-            log(
-                "🛑 Stopping WEEK shard."
-            )
-
-            with open(
-                CHECKPOINT_FILE,
-                "w",
-                encoding="utf-8"
-            ) as f:
-
-                f.write(
-                    str(streak_start)
-                )
+            with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
+                f.write(str(streak_start))
 
             aborted = True
-
             break
 
-        # --------------------------------------------
-        # Periodic restart
-        # --------------------------------------------
-
-        if (
-            (i + 1)
-            % RESTART_EVERY_ROWS
-            == 0
-        ):
-
-            log(
-                "♻️ Scheduled Chrome "
-                "restart..."
-            )
-
+        # ---------------- Periodic restart ----------------
+        if (i + 1) % RESTART_EVERY_ROWS == 0:
+            log("♻️ Scheduled Chrome restart...")
             restart_driver()
 
-        # --------------------------------------------
-        # Upload batch
-        # 3 ranges per row
-        # --------------------------------------------
+        # ---------------- Upload batch (3 ranges per row) ----------------
+        if len(batch_list) // 3 >= BATCH_SIZE:
+            log(f"🚀 Uploading batch of {BATCH_SIZE}...")
 
-        if (
-            len(batch_list) // 3
-            >= BATCH_SIZE
-        ):
-
-            log(
-                f"🚀 Uploading batch "
-                f"of {BATCH_SIZE}..."
-            )
-
-            api_retry(
-                sheet_data.batch_update,
-                batch_list,
-                value_input_option="RAW"
-            )
+            api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
 
             batch_list = []
 
 finally:
-
     if batch_list:
+        log("🚀 Uploading remaining batch...")
 
-        log(
-            "🚀 Uploading remaining "
-            "batch..."
-        )
-
-        api_retry(
-            sheet_data.batch_update,
-            batch_list,
-            value_input_option="RAW"
-        )
+        api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
 
         batch_list = []
 
@@ -1882,13 +842,8 @@ finally:
 # ============================================================
 
 if aborted:
-
     restart_driver()
-
-    log(
-        "❌ WEEK SHARD ABORTED."
-    )
-
+    log("❌ WEEK SHARD ABORTED.")
     sys.exit(1)
 
 
@@ -1898,66 +853,30 @@ if aborted:
 
 if retry_indices:
 
-    log(
-        f"🔁 Starting Retry Pass "
-        f"for "
-        f"{len(retry_indices)} "
-        f"symbols..."
-    )
+    log(f"🔁 Starting Retry Pass for {len(retry_indices)} symbols...")
 
     restart_driver()
 
     batch_list = []
 
-    for idx, i in enumerate(
-        retry_indices,
-        start=1
-    ):
+    for idx, i in enumerate(retry_indices, start=1):
 
-        payload, success, _ = (
-            process_row(
-                i,
-                company_list,
-                url_list,
-                current_date
-            )
-        )
+        payload, success, _ = process_row(i, company_list, url_list, current_date)
 
-        batch_list.extend(
-            payload
-        )
+        batch_list.extend(payload)
 
         # Restart every 10 retry rows
         if idx % 10 == 0:
-
-            log(
-                "♻️ Retry-pass Chrome "
-                "restart..."
-            )
-
+            log("♻️ Retry-pass Chrome restart...")
             restart_driver()
 
         # Smaller retry batches
-        if (
-            len(batch_list) // 3
-            >= 10
-        ):
-
-            api_retry(
-                sheet_data.batch_update,
-                batch_list,
-                value_input_option="RAW"
-            )
-
+        if len(batch_list) // 3 >= 10:
+            api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
             batch_list = []
 
     if batch_list:
-
-        api_retry(
-            sheet_data.batch_update,
-            batch_list,
-            value_input_option="RAW"
-        )
+        api_retry(sheet_data.batch_update, batch_list, value_input_option="RAW")
 
 
 # ============================================================
@@ -1966,6 +885,4 @@ if retry_indices:
 
 restart_driver()
 
-log(
-    "🏁 WEEK SHARD COMPLETED."
-)
+log("🏁 WEEK SHARD COMPLETED.")
